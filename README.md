@@ -33,11 +33,11 @@ Volante-direct-drive-con-Force-Feedback/
 │   │   ├── parse_fast_lane                 Extracción/procesado de la trazada (fast lane) de la pista
 │   │   └── README
 │   ├── Matlab/                             Modelado, diseño y validación del controlador MPC
-│   │   ├── Modelo
-│   │   ├── MPC View 2D
-│   │   ├── MPC View 3D
-│   │   ├── MPCDesignerSessionPython
-│   │   ├── Validacion
+│   │   ├── Modelo                          Modelo dinámico del volante en espacio de estados (continuo y discreto) y función de transferencia
+│   │   ├── MPC View 2D                     Simulink: MPC controlando el volante aislado (θ vs θ_ref)
+│   │   ├── MPC View 3D                     Simulink: MPC + volante + modelo de vehículo (bicicleta) + escena 3D
+│   │   ├── MPCDesignerSessionPython        Sesión de MPC Designer con el objeto mpc1 ya diseñado/ajustado
+│   │   ├── Validacion                      Post-proceso: métricas de error de seguimiento, trayectoria XY, curvatura y velocidad
 │   │   └── README
 │   └── Python/                             Implementación del MPC en tiempo real / interfaz con el simulador
 │       ├── mpc_monza_FINAL                 Script principal: MPC real corriendo en Monza
