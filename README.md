@@ -44,6 +44,12 @@ Volante-direct-drive-con-Force-Feedback/
 │       └── README
 └── Prototipo/
     ├── calculos_engranajes_volante         Script de MATLAB con los cálculos de resistencia de engranajes
+    ├── Imagenes/                            Registro fotográfico del prototipo
+    │   ├── Desgaste engranajes ABS.jpg     Desgaste (manchas blancas) por golpeteo de dientes del engranaje-piñón
+    │   ├── Desgaste engranajes ABS 2.jpg   Segundo ángulo del desgaste del engranaje-piñón
+    │   ├── Estructura Volante.jpg          Vista interna: encoder, MKS ODrive, motor y rejillas de ventilación
+    │   ├── Prototipo completo.jpg          Estructura completa con volante provisional para pruebas
+    │   └── README                          Descripción detallada de cada fotografía
     └── README                              Avance del diseño físico del volante
 ```
 
@@ -53,7 +59,7 @@ Volante-direct-drive-con-Force-Feedback/
 - **AC Codes** — Scripts de interfaz con Assetto Corsa: localización del carro sobre la trazada y procesado de la fast lane.
 - **Matlab (MPC Simulado)** — Modelado, diseño y validación del controlador MPC.
 - **Python (MPC en tiempo real)** — Implementación del MPC corriendo en tiempo real sobre Monza, control del volante (simulado o físico vía FFBeast) e interfaz con Assetto Corsa.
-- **Prototipo** — Historial de diseño y fabricación del volante: componentes, relación de engranajes, cálculos de resistencia (Ecuación de Lewis) y comparación de materiales (PC, ABS, PLA).
+- **Prototipo** — Historial de diseño y fabricación del volante: componentes, relación de engranajes, cálculos de resistencia (Ecuación de Lewis), comparación de materiales (PC, ABS, PLA) y registro fotográfico del desarrollo (ver `Prototipo/Imagenes`).
 
 ## Archivo .gitignore
 
