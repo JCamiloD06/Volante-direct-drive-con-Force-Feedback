@@ -44,7 +44,11 @@ Volante-direct-drive-con-Force-Feedback/
 │       └── README
 └── Prototipo/
     ├── calculos_engranajes_volante         Script de MATLAB con los cálculos de resistencia de engranajes
-    ├── Imagenes/                            Registro fotográfico del prototipo (desgaste del engranaje-piñón, estructura interna, prototipo completo)
+    ├── Imagenes/                            Registro fotográfico del prototipo
+    │   ├── Desgaste engranajes ABS.jpg     Desgaste (manchas blancas) por golpeteo de dientes del engranaje-piñón
+    │   ├── Desgaste engranajes ABS 2.jpg   Segundo ángulo del desgaste del engranaje-piñón
+    │   ├── Estructura Volante.jpg          Vista interna: encoder, MKS ODrive, motor y rejillas de ventilación
+    │   ├── Prototipo completo.jpg          Estructura completa con volante provisional para pruebas
     │   └── README                          Descripción detallada de cada fotografía
     └── README                              Avance del diseño físico del volante
 ```
