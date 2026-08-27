@@ -6,7 +6,7 @@ Proyecto de desarrollo de un **volante direct-drive con Force Feedback (FFB)** d
 
 - **Integrantes:** Juan Camilo Díaz López y Jesus Alberto Lastra Robles
 - **Profesor:** Francisco Javier Burgos Flórez
-- **Carrera:** Ingeniería Mecatrónica 
+- **Carrera:** Ingeniería Mecatrónica
 - **Institución:** Universidad Nacional de Colombia, Sede de La Paz
 
 ## Descripción del proyecto
@@ -20,6 +20,8 @@ El proyecto combina dos frentes de trabajo:
 
 ```
 Volante-direct-drive-con-Force-Feedback/
+├── .gitignore                              Archivos que Git debe ignorar (metadata de Windows/macOS, temporales, etc.)
+├── README.md                               Este archivo
 ├── Firmware/
 │   ├── ffbeast-wheel-RC.24.1.4.Full/      Firmware comprimido (contiene ffbeast-wheel-hex y ffbeast-wheel-ui)
 │   └── README                              Instrucciones de instalación y configuración del firmware
@@ -52,6 +54,17 @@ Volante-direct-drive-con-Force-Feedback/
 - **Matlab (MPC Simulado)** — Modelado, diseño y validación del controlador MPC.
 - **Python (MPC en tiempo real)** — Implementación del MPC corriendo en tiempo real sobre Monza, control del volante (simulado o físico vía FFBeast) e interfaz con Assetto Corsa.
 - **Prototipo** — Historial de diseño y fabricación del volante: componentes, relación de engranajes, cálculos de resistencia (Ecuación de Lewis) y comparación de materiales (PC, ABS, PLA).
+
+## Archivo .gitignore
+
+El repositorio incluye un `.gitignore` en la raíz para evitar que se suban archivos que no aportan al proyecto:
+
+- **Metadata de Windows/macOS:** `desktop.ini`, `Thumbs.db`, `ehthumbs.db`, `.DS_Store` — archivos que el propio sistema operativo genera en cada carpeta para guardar preferencias de visualización, y que no tienen relación con el código o los diseños.
+- **Archivos temporales de edición:** `*.tmp`, `*.bak`, `*~`.
+- **Entornos virtuales y cachés de Python:** `venv/`, `env/`, `__pycache__/`, `*.pyc` — en caso de que alguien cree un entorno virtual dentro del repo al trabajar en `Model Predictive Control/Python`.
+- **Archivos autogenerados de MATLAB:** `*.asv` (copias de autoguardado) y `slprj/` (carpeta de compilación de Simulink), generados al trabajar en `Model Predictive Control/Matlab`.
+
+Si ya subiste alguno de estos archivos antes de agregar el `.gitignore` (por ejemplo, un `desktop.ini` dentro de `Firmware`), el `.gitignore` no lo elimina automáticamente: hay que borrarlo manualmente del repositorio una sola vez (desde GitHub o con `git rm --cached <archivo>`), y a partir de ahí Git dejará de rastrearlo.
 
 ## Estado actual
 
