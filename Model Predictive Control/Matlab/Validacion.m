@@ -7,6 +7,7 @@
 X     = out.X_pos.Data;
 Y     = out.Y_pos.Data;
 t     = out.tout;
+Ts    = 0.05;
 
 %% ================================================
 %  MÉTRICA 1 — ERROR DE SEGUIMIENTO DEL VOLANTE
@@ -80,10 +81,10 @@ V_total  = sqrt(Vx_aprox.^2 + Vy_aprox.^2);
 fprintf('\n=== MÉTRICA 4: VELOCIDAD ===\n')
 fprintf('Velocidad media: %.4f m/s\n', mean(V_total))
 fprintf('Velocidad máxima: %.4f m/s\n', max(V_total))
-fprintf('Velocidad mínima: %.4f m/s\n', min(V_total(100:end)))
+fprintf('Velocidad mínima: %.4f m/s\n', min(V_total(round(end/2):end)))
 
 % ¿Qué debes ver?
-%   Velocidad ≈ 5 m/s constante → el modelo es correcto ✓
+%   Velocidad ≈ 11 m/s constante → el modelo es correcto ✓
 %   Variaciones grandes → problema en el modelo
 
 %% ================================================
@@ -121,7 +122,7 @@ grid on;
 subplot(3,2,4)
 plot(t, X, 'b-', 'LineWidth', 2);
 hold on;
-plot(t, 5*t, 'k--', 'LineWidth', 1.5);   % referencia v=5m/s
+plot(t, 11*t, 'k--', 'LineWidth', 1.5);   % referencia v=5m/s
 title('Posición X vs Tiempo', 'FontSize', 12);
 xlabel('Tiempo (s)'); ylabel('X (m)');
 legend('X real', 'Referencia v=5m/s', 'Location', 'best');
@@ -137,7 +138,7 @@ grid on;
 % GRÁFICA 5 — Velocidad resultante
 subplot(3,2,6)
 plot(t, V_total, 'g-', 'LineWidth', 1.5);
-yline(5, 'k--', 'v = 5 m/s', 'LineWidth', 1.5);
+yline(11, 'k--', 'v = 11 m/s', 'LineWidth', 1.5);
 title('Velocidad Resultante del Vehículo', 'FontSize', 12);
 xlabel('Tiempo (s)'); ylabel('V (m/s)');
 grid on;

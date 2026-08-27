@@ -105,7 +105,7 @@ fprintf('  - Constante de tiempo asociada: tau = J/b = %.4f s\n', J/b)
 Ts = 0.05;
 sys_d = c2d(sys_c, Ts, 'zoh');
 
-disp('=== MODELO DISCRETO (Ts = 0.01s) — ESPACIO DE ESTADOS ===')
+disp('=== MODELO DISCRETO (Ts = 0.05s) — ESPACIO DE ESTADOS ===')
 sys_d
 
 %% --- FUNCIÓN DE TRANSFERENCIA DISCRETA ---

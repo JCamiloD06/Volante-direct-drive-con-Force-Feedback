@@ -312,9 +312,9 @@ class MPCSteeringController:
     secuencia completa y descarta el resto.
     """
 
-    def __init__(self, J=0.02, b=0.1, Ts=0.05, N=10,
+    def __init__(self, J=0.08, b=0.05, Ts=0.05, N=10,
                  Q=10.41, Qf=10.41, R=0.0, Rd=0.288,
-                 tau_max=2.0, rate_max=1.0, theta_max=1.2):
+                 tau_max=2.0, rate_max=1.0, theta_max=7.85):
         self.J, self.b, self.Ts, self.N = J, b, Ts, N
         self.Q, self.Qf, self.R, self.Rd = Q, Qf, R, Rd
         self.tau_max, self.rate_max, self.theta_max = tau_max, rate_max, theta_max
@@ -487,7 +487,7 @@ class SimulatedSteeringPlant:
     que filtrar.
     """
 
-    def __init__(self, J=0.02, b=0.1, Ts=0.05):
+    def __init__(self, J=0.08, b=0.05, Ts=0.05):
         self.J, self.b, self.Ts = J, b, Ts
         self.theta = 0.0
         self.theta_dot = 0.0
@@ -806,7 +806,7 @@ def main(use_ffbeast=False):
         't_s', 'car_x', 'car_z',
         'e_y_m', 'e_psi_rad',
         'theta_ref0_deg', 'theta_real_deg',
-        'theta_dot_kf_degs', 'theta_dot_raw_degs',
+        'theta_dot_degs', 'theta_dot_raw_degs',
         'error_deg', 'tau_Nm',
         'speed_kmh', 'kappa_avg', 'loop_dt_ms'
     ])
