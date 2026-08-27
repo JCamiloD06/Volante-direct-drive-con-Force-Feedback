@@ -277,7 +277,7 @@ class ReferenceGenerator:
             decay = self.error_decay ** k
             delta_total = self.steer_sign * (decay * delta_pp0 + 0.5 * delta_ff)
 
-            theta_k = np.clip(delta_total * self.n, -1.2, 1.2)
+            theta_k = np.clip(delta_total * self.n, -7.85, 7.85)
             theta_ref[k] = theta_k
 
         return theta_ref
@@ -499,7 +499,7 @@ class SimulatedSteeringPlant:
         theta_ddot = (tau - self.b * self.theta_dot) / self.J
         self.theta_dot += theta_ddot * self.Ts
         self.theta += self.theta_dot * self.Ts
-        self.theta = float(np.clip(self.theta, -1.2, 1.2))
+        self.theta = float(np.clip(self.theta, -7.85, 7.85))
         return self.theta, self.theta_dot
 
     def center(self):
@@ -718,7 +718,7 @@ class VJoyOutput:
         self.j = pyvjoy.VJoyDevice(device_id)
         self.center()
 
-    def send(self, steer_rad, max_rad=1.2):
+    def send(self, steer_rad, max_rad=7.85):
         norm     = np.clip(steer_rad / max_rad, -1.0, 1.0)
         vjoy_val = int((norm + 1.0) / 2.0 * 32766 + 1)
         vjoy_val = max(1, min(32767, vjoy_val))
