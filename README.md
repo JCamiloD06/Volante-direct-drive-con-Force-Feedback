@@ -1,10 +1,10 @@
-# Volante-direct-drive-con-Force-Feedback
+# Volante direct drive con Force Feedback
 
 Proyecto de desarrollo de un **volante direct-drive con Force Feedback (FFB)** de bajo costo, junto con la implementación de un **controlador MPC (Model Predictive Control)** orientado a dirección autónoma, usando Assetto Corsa como entorno de simulación y pruebas.
 
 ## Equipo
 
-- **Integrantes:** Jesus Alberto Lastra Robles y [tu nombre]
+- **Integrantes:** Juan Camilo Díaz López y Jesus Alberto Lastra Robles
 - **Profesor:** Francisco Javier Burgos Flórez
 - **Institución:** Universidad Nacional de Colombia, Sede de La Paz
 
