@@ -72,8 +72,6 @@ El repositorio incluye un `.gitignore` en la raíz para evitar que se suban arch
 - **Entornos virtuales y cachés de Python:** `venv/`, `env/`, `__pycache__/`, `*.pyc` — en caso de que alguien cree un entorno virtual dentro del repo al trabajar en `Model Predictive Control/Python`.
 - **Archivos autogenerados de MATLAB:** `*.asv` (copias de autoguardado) y `slprj/` (carpeta de compilación de Simulink), generados al trabajar en `Model Predictive Control/Matlab`.
 
-Si ya subiste alguno de estos archivos antes de agregar el `.gitignore` (por ejemplo, un `desktop.ini` dentro de `Firmware`), el `.gitignore` no lo elimina automáticamente: hay que borrarlo manualmente del repositorio una sola vez (desde GitHub o con `git rm --cached <archivo>`), y a partir de ahí Git dejará de rastrearlo.
-
 ## Estado actual
 
 - Primer prototipo del volante (ABS) fabricado y validado en Assetto Corsa. (Completado)
