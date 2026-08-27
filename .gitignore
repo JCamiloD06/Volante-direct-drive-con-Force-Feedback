@@ -1,0 +1,20 @@
+# Archivos de metadata que Windows/macOS crean automáticamente en las carpetas
+desktop.ini
+Thumbs.db
+ehthumbs.db
+.DS_Store
+
+# Archivos temporales de edición
+*.tmp
+*.bak
+*~
+
+# Entornos virtuales de Python (si los llegas a crear en el repo)
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Archivos de MATLAB autogenerados
+*.asv
+slprj/
