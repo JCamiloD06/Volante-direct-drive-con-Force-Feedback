@@ -172,7 +172,7 @@ Cada vez que se corre el script se genera un log nuevo (`mpc_session_<fecha>_<ho
 | `e_psi_rad` | Error de heading respecto a la trazada, en radianes (diferencia entre hacia dónde apunta el carro y hacia dónde apunta la pista). |
 | `theta_ref0_deg` | Ángulo de volante que el MPC calculó como referencia para el primer paso del horizonte, en grados. |
 | `theta_real_deg` | Ángulo de volante realmente aplicado/alcanzado ese ciclo, en grados. |
-| `theta_dot_kf_degs` | Velocidad angular del volante **estimada** (por el Kalman en Fase B, o exacta en Fase A), en grados/segundo. Es la que realmente alimenta al MPC. |
+| `theta_dot_degs` | Velocidad angular del volante **estimada** (por el Kalman en Fase B), en grados/segundo. Es la que realmente alimenta al MPC. |
 | `theta_dot_raw_degs` | Velocidad angular calculada por diferenciación numérica cruda, solo para comparar contra el estimado del Kalman — no se usa para controlar. |
 | `error_deg` | Diferencia entre `theta_ref0_deg` y `theta_real_deg`: qué tan bien está siguiendo el volante a la referencia calculada. |
 | `tau_Nm` | Torque aplicado por el MPC ese ciclo, en Nm. |
