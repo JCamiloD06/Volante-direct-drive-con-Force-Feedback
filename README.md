@@ -40,9 +40,9 @@ Volante-direct-drive-con-Force-Feedback/
 
 ## Documentación
 
-- **[Firmware](./Firmware/README)** — Instalación de STM32CubeProgrammer, modo bootloader del MKS ODrive y configuración con la app de setup de FFBeast.
-- **[Model Predictive Control](./Model%20Predictive%20Control/README)** — Diseño del controlador MPC para dirección autónoma (Matlab), su implementación en tiempo real (Python) y la interfaz de telemetría con Assetto Corsa (AC Codes).
-- **[Prototipo](./Prototipo/README)** — Historial de diseño y fabricación del volante: componentes, relación de engranajes, cálculos de resistencia (Ecuación de Lewis) y comparación de materiales (PC, ABS, PLA).
+- **Firmware** — Instalación de STM32CubeProgrammer, modo bootloader del MKS ODrive y configuración con la app de setup de FFBeast.
+- **Model Predictive Control** — Diseño del controlador MPC para dirección autónoma (Matlab), su implementación en tiempo real (Python) y la interfaz de telemetría con Assetto Corsa (AC Codes).
+- **Prototipo** — Historial de diseño y fabricación del volante: componentes, relación de engranajes, cálculos de resistencia (Ecuación de Lewis) y comparación de materiales (PC, ABS, PLA).
 
 ## Estado actual
 
