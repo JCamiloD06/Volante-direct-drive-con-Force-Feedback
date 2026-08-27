@@ -1,0 +1,40 @@
+Copyright (c) 2026 Juan Camilo Díaz López y Jesus Alberto Lastra Robles
+
+Todos los derechos reservados.
+
+Este proyecto ("Volante direct-drive con Force Feedback"), incluyendo pero no
+limitado a su código fuente, diseños, esquemas, modelos, documentación,
+imágenes y cualquier otro material contenido en este repositorio, es
+propiedad intelectual exclusiva de los autores mencionados anteriormente.
+
+Este proyecto fue desarrollado en el marco del programa de Ingeniería
+Mecatrónica de la Universidad Nacional de Colombia, Sede de La Paz, bajo
+la supervisión del profesor Francisco Javier Burgos Flórez.
+
+No se concede ningún permiso para usar, copiar, modificar, fusionar,
+publicar, distribuir, sublicenciar y/o vender copias de este proyecto o de
+partes de él, ni para permitir que terceros a quienes se les proporcione
+el proyecto lo hagan, sin la autorización previa y por escrito de los
+autores.
+
+Se permite el acceso y la revisión de este material exclusivamente con
+fines de evaluación académica por parte de docentes y evaluadores
+autorizados de la Universidad Nacional de Colombia, sin que esto implique
+cesión de derechos ni autorización de uso, copia o distribución.
+
+## Excepción: carpeta Firmware/
+
+El contenido de la carpeta `Firmware/` (incluyendo el firmware FFBeast y
+componentes asociados) corresponde a software de terceros de uso libre y
+NO es propiedad de los autores de este repositorio. Dicho contenido se
+distribuye conforme a los términos y licencia establecidos por sus
+respectivos autores originales, y no está cubierto por esta licencia de
+derechos reservados. Consulte la fuente original del firmware para
+conocer sus términos de uso específicos.
+
+ESTE PROYECTO SE PROPORCIONA "TAL CUAL", SIN GARANTÍA DE NINGÚN TIPO,
+EXPRESA O IMPLÍCITA. EN NINGÚN CASO LOS AUTORES SERÁN RESPONSABLES POR
+NINGÚN RECLAMO, DAÑO U OTRA RESPONSABILIDAD DERIVADA DEL USO DE ESTE
+PROYECTO.
+
+Para solicitar autorización de uso, contactar a los autores.
