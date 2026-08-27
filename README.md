@@ -16,6 +16,8 @@ El proyecto combina dos frentes de trabajo:
 1. **Hardware del volante (Force Feedback):** construcción de un volante direct-drive reutilizando motores de hoverboard, controlados mediante un MKS ODrive Mini, con retroalimentación de fuerza (FFB) validada en el simulador Assetto Corsa.
 2. **Control MPC para dirección autónoma:** diseño e implementación de un controlador predictivo (Model Predictive Control) para dirección autónoma, con modelado/tuning en Matlab e implementación en tiempo real mediante Python, interactuando con la telemetría de Assetto Corsa.
 
+> **Nota sobre el alcance del MPC:** a diferencia de la mayoría de trabajos de control predictivo aplicados a conducción autónoma, que modelan la dinámica completa del vehículo (chasis, neumáticos, tracción, etc.), en este proyecto la planta modelada para el MPC es **únicamente el volante** (el sistema direct-drive con force feedback). Esto se debe a que nuestro sistema físico es el volante en sí, no el vehículo completo, por lo que el alcance del controlador se limita a la **dirección autónoma** (control del ángulo del volante), y no a la dinámica lateral/longitudinal del auto.
+
 ## Estructura del repositorio
 
 ```
@@ -57,7 +59,7 @@ Volante-direct-drive-con-Force-Feedback/
 
 - **Firmware** — Instalación de STM32CubeProgrammer, modo bootloader del MKS ODrive y configuración con la app de setup de FFBeast.
 - **AC Codes** — Scripts de interfaz con Assetto Corsa: localización del carro sobre la trazada y procesado de la fast lane.
-- **Matlab (MPC Simulado)** — Modelado, diseño y validación del controlador MPC.
+- **Matlab (MPC Simulado)** — Modelado, diseño y validación del controlador MPC. La planta modelada corresponde al volante (sistema direct-drive), no al vehículo completo, ya que el alcance del proyecto es la dirección autónoma y no la dinámica integral del auto.
 - **Python (MPC en tiempo real)** — Implementación del MPC corriendo en tiempo real sobre Monza, control del volante (simulado o físico vía FFBeast) e interfaz con Assetto Corsa.
 - **Prototipo** — Historial de diseño y fabricación del volante: componentes, relación de engranajes, cálculos de resistencia (Ecuación de Lewis), comparación de materiales (PC, ABS, PLA) y registro fotográfico del desarrollo (ver `Prototipo/Imagenes`).
 
