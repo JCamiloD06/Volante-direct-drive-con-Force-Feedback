@@ -277,6 +277,8 @@ class ReferenceGenerator:
             decay = self.error_decay ** k
             delta_total = self.steer_sign * (decay * delta_pp0 + 0.5 * delta_ff)
 
+            # Rango unificado con MPCSteeringController.theta_max y
+            # VJoyOutput.max_rad (450 grados de rotación total del volante)
             theta_k = np.clip(delta_total * self.n, -7.85, 7.85)
             theta_ref[k] = theta_k
 
@@ -325,6 +327,17 @@ class MPCSteeringController:
 
         self.u_prev = 0.0
         self._u_warm = np.zeros(N)  # warm start para el optimizador
+
+    def reset(self):
+        """
+        Reinicia el estado interno del optimizador (u_prev y el warm-start).
+        Llamar cuando el control se desactiva o el auto está parado, para que
+        al reengancharse no arrastre un u_prev/_u_warm de antes de la pausa
+        (evita saltos de torque o un rate_constraint artificialmente
+        restrictivo justo al reanudar el control).
+        """
+        self.u_prev = 0.0
+        self._u_warm = np.zeros(self.N)
 
     def _predict(self, x0, u_seq):
         xs = np.zeros((self.N + 1, 2))
@@ -499,6 +512,8 @@ class SimulatedSteeringPlant:
         theta_ddot = (tau - self.b * self.theta_dot) / self.J
         self.theta_dot += theta_ddot * self.Ts
         self.theta += self.theta_dot * self.Ts
+        # Rango unificado con MPCSteeringController.theta_max y
+        # VJoyOutput.max_rad (450 grados de rotación total del volante)
         self.theta = float(np.clip(self.theta, -7.85, 7.85))
         return self.theta, self.theta_dot
 
@@ -719,6 +734,8 @@ class VJoyOutput:
         self.center()
 
     def send(self, steer_rad, max_rad=7.85):
+        # max_rad unificado con MPCSteeringController.theta_max y
+        # SimulatedSteeringPlant/ReferenceGenerator (450 grados totales)
         norm     = np.clip(steer_rad / max_rad, -1.0, 1.0)
         vjoy_val = int((norm + 1.0) / 2.0 * 32766 + 1)
         vjoy_val = max(1, min(32767, vjoy_val))
@@ -895,6 +912,10 @@ def main(use_ffbeast=False):
                 plant.center()
                 theta_new, _ = plant.get_state()
                 theta_ref_seq = np.zeros(N)
+                # Reinicia el estado interno del MPC (u_prev, warm-start) al
+                # detenerse, en Fase A y en Fase B, para no arrastrar valores
+                # de antes de la pausa cuando el control se reengancha.
+                mpc.reset()
                 if use_ffbeast:
                     kf.reset(theta_new, 0.0)
 
