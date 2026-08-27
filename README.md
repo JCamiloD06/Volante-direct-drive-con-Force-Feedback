@@ -4,8 +4,9 @@ Proyecto de desarrollo de un **volante direct-drive con Force Feedback (FFB)** d
 
 ## Equipo
 
-- **Integrantes:** Jesus Alberto Lastra Robles y [tu nombre]
+- **Integrantes:** Juan Camilo Díaz López y Jesus Alberto Lastra Robles
 - **Profesor:** Francisco Javier Burgos Flórez
+- **Carrera:** Ingeniería Mecatrónica 
 - **Institución:** Universidad Nacional de Colombia, Sede de La Paz
 
 ## Descripción del proyecto
