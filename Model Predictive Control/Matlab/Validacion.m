@@ -122,7 +122,7 @@ grid on;
 subplot(3,2,4)
 plot(t, X, 'b-', 'LineWidth', 2);
 hold on;
-plot(t, 11*t, 'k--', 'LineWidth', 1.5);   % referencia v=5m/s
+plot(t, 11*t, 'k--', 'LineWidth', 1.5);   % referencia v=11m/s
 title('Posición X vs Tiempo', 'FontSize', 12);
 xlabel('Tiempo (s)'); ylabel('X (m)');
 legend('X real', 'Referencia v=11m/s', 'Location', 'best');
