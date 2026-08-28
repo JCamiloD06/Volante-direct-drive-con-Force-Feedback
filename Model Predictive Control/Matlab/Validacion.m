@@ -125,7 +125,7 @@ hold on;
 plot(t, 11*t, 'k--', 'LineWidth', 1.5);   % referencia v=5m/s
 title('Posición X vs Tiempo', 'FontSize', 12);
 xlabel('Tiempo (s)'); ylabel('X (m)');
-legend('X real', 'Referencia v=5m/s', 'Location', 'best');
+legend('X real', 'Referencia v=11m/s', 'Location', 'best');
 grid on;
 
 % GRÁFICA 4 — Curvatura
