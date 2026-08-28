@@ -55,10 +55,10 @@ x = [θ; θ̇]        (ángulo, velocidad angular)
 
 | Parámetro | Símbolo | Valor actual | Unidades |
 |---|---|---|---|
-| Inercia rotacional total | `J` | 0.08 | kg·m² |
-| Fricción viscosa total | `b` | 0.05 | N·m·s/rad |
+| Inercia rotacional total | `J` | 0.02 | kg·m² |
+| Fricción viscosa total | `b` | 0.1 | N·m·s/rad |
 
-El propio script deja indicado en un comentario que estos valores deben reemplazarse por los identificados experimentalmente una vez se tengan mediciones del volante real.
+El propio script deja indicado en un comentario que estos valores son **estimados** y deben reemplazarse por los identificados experimentalmente una vez se tengan mediciones del volante real.
 
 ### 3.3 Espacio de estados continuo
 
@@ -75,11 +75,13 @@ Es decir:
 θ̈ = -(b/J)·θ̇ + (1/J)·τ
 ```
 
-Un integrador puro de posición más un polo de primer orden en velocidad ubicado en `s = -b/J = -0.625 rad/s`.
+Un integrador puro de posición más un polo de primer orden en velocidad ubicado en `s = -b/J = -5 rad/s` (constante de tiempo asociada `τ = J/b = 0.2 s`).
+
+El objeto `sys_c` se construye con nombres de estado/entrada/salida explícitos (`'Angulo (rad)'`, `'Velocidad (rad/s)'`, `'Torque (Nm)'`), lo que facilita la lectura de los bloques de espacio de estados directamente en el Command Window de MATLAB.
 
 ### 3.4 Función de transferencia (continua y discreta)
 
-`Modelo.m` ahora deriva también la **función de transferencia** del volante, en paralelo al espacio de estados, y muestra todo el desarrollo detalladamente en el *Command Window*.
+`Modelo.m` deriva también la **función de transferencia** del volante, en paralelo al espacio de estados, y muestra todo el desarrollo detalladamente en el *Command Window*.
 
 **Derivación (a partir de la misma ecuación dinámica):**
 
@@ -95,6 +97,12 @@ Aplicando Laplace con condiciones iniciales nulas:
 G(s) = Θ(s)/Τ(s) = 1 / (J·s² + b·s)
 ```
 
+Con los valores actuales (`J = 0.02`, `b = 0.1`):
+
+```
+G(s) = 1 / (0.02·s² + 0.1·s)
+```
+
 En el script esto se construye como `sys_tf = tf(1, [J, b, 0])` y se **verifica por partida doble** contra `tf(sys_c)` (la conversión automática de MATLAB desde el espacio de estados), para confirmar que ambas representaciones coinciden.
 
 El script imprime en el Command Window, tanto para la versión **continua** (`sys_tf`) como para la **discreta** (`sys_tf_d = c2d(sys_tf, Ts, 'zoh')`):
@@ -103,8 +111,8 @@ El script imprime en el Command Window, tanto para la versión **continua** (`sy
 - Numerador, denominador, ganancia, ceros y polos (vía `zpkdata`).
 - Ganancia DC (`dcgain`).
 - Interpretación física de los polos:
-  - **Continuo:** polo en `s = 0` (integrador puro del ángulo) y polo en `s = -b/J` (dinámica de velocidad, con constante de tiempo `τ = J/b`).
-  - **Discreto:** polo en `z = 1` (arrastrado del integrador continuo) y polo en `z = exp(-b/J·Ts)` (versión discretizada por ZOH del polo de velocidad).
+  - **Continuo:** polo en `s = 0` (integrador puro del ángulo) y polo en `s = -b/J = -5 rad/s` (dinámica de velocidad, con constante de tiempo `τ = J/b = 0.2 s`).
+  - **Discreto:** polo en `z = 1` (arrastrado del integrador continuo) y polo en `z = exp(-b/J·Ts) ≈ 0.7788` (versión discretizada por ZOH del polo de velocidad, con `Ts = 0.05 s`).
 
 Esto deja el modelo documentado en **ambas representaciones equivalentes** (espacio de estados y función de transferencia), útil tanto para el diseño del MPC (que usa espacio de estados internamente) como para el análisis clásico de la dinámica (polos, constante de tiempo, tipo de sistema) en la sección de metodología del artículo.
 
@@ -114,6 +122,8 @@ Esto deja el modelo documentado en **ambas representaciones equivalentes** (espa
 Ts = 0.05;  % 50 ms → 20 Hz
 sys_d = c2d(sys_c, Ts, 'zoh');
 ```
+
+> **Importante:** este `Ts = 0.05 s` es el paso de discretización usado en `Modelo.m` para análisis/diseño offline. Es distinto del `n_ts = 0.01 s` (100 Hz) configurado en el bloque `Control MPC` dentro de Simulink (ver sección 4.3) — no deben confundirse en el reporte.
 
 ### 3.6 Verificación
 
