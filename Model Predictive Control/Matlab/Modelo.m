@@ -5,8 +5,8 @@
 clear; clc;
 
 %% --- PARÁMETROS FÍSICOS (estimados) ---
-J = 0.08;       % Inercia rotacional total    [kg·m²]
-b = 0.05;       % Fricción viscosa total      [N·m·s/rad]
+J = 0.02;       % Inercia rotacional total    [kg·m²]
+b = 0.1;       % Fricción viscosa total      [N·m·s/rad]
 
 % Cuando tengas el volante real, reemplaza estos valores
 % con los identificados experimentalmente
