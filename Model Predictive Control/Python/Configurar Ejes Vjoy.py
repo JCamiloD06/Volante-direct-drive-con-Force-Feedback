@@ -1,67 +1,235 @@
 import pyvjoy
-import numpy as np
+import time
 
 
-class VJoyOutput:
-    def __init__(self, device_id=1):
-        self.j = pyvjoy.VJoyDevice(device_id)
-        self.center()
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
 
-    def send_all(self, steer_rad, u_cmd, max_rad=1.2):
-        """
-        steer_rad:
-            Dirección en radianes [-1.2, +1.2]
+VJOY_ID = 1
 
-        u_cmd:
-            Comando longitudinal [-1, +1]
-            +1 = acelerador
-             0 = sin acelerador/freno
-            -1 = freno
-        """
+CENTRO = 16384
+MINIMO = 1
+MAXIMO = 32767
 
-        # -------------------------
-        # DIRECCIÓN -> EJE X
-        # -------------------------
-        norm = np.clip(steer_rad / max_rad, -1.0, 1.0)
 
-        steer_val = int(
-            (norm + 1.0) / 2.0 * 32766 + 1
-        )
+# ============================================================
+# CONEXIÓN CON VJOY
+# ============================================================
 
-        steer_val = max(1, min(32767, steer_val))
+try:
+    vjoy = pyvjoy.VJoyDevice(VJOY_ID)
+    print("==============================================")
+    print("        CONFIGURADOR vJoy - Assetto Corsa")
+    print("==============================================")
+    print()
+    print("vJoy Device 1 conectado correctamente.")
+    print()
 
-        # -------------------------
-        # ACELERADOR / FRENO
-        # -------------------------
-        if u_cmd >= 0:
-            gas_val = int(u_cmd * 32767)
-            brake_val = 0
-        else:
-            gas_val = 0
-            brake_val = int(-u_cmd * 32767)
+except Exception as e:
+    print("ERROR: No se pudo conectar con vJoy.")
+    print()
+    print(e)
+    input("\nPresiona ENTER para cerrar...")
+    exit()
 
-        # -------------------------
-        # ENVIAR A VJOY
-        # -------------------------
-        self.j.data.wAxisX = steer_val
-        self.j.data.wAxisY = gas_val
-        self.j.data.wAxisZRot = brake_val
 
-        self.j.update()
+# ============================================================
+# FUNCIONES
+# ============================================================
 
-        return (
-            gas_val / 32767.0,
-            brake_val / 32767.0
-        )
+def centro():
+    """Deja todos los controles en reposo."""
 
-    def center(self):
-        # Volante al centro
-        self.j.data.wAxisX = 16384
+    vjoy.data.wAxisX = CENTRO
+    vjoy.data.wAxisY = 0
+    vjoy.data.wAxisZRot = 0
 
-        # Acelerador 0
-        self.j.data.wAxisY = 0
+    vjoy.update()
 
-        # Freno 0
-        self.j.data.wAxisZRot = 0
 
-        self.j.update()
+def mover_volante():
+    """
+    Mueve SOLAMENTE el eje X.
+    Content Manager debe detectar Steering.
+    """
+
+    print()
+    print("----------------------------------------------")
+    print("VOLANTE - EJE X")
+    print("----------------------------------------------")
+    print("Haz clic en STEERING dentro de Content Manager.")
+    print("Cuando esté esperando el eje, presiona ENTER.")
+    input()
+
+    print("Moviendo eje X...")
+
+    # Izquierda
+    vjoy.data.wAxisX = MINIMO
+    vjoy.data.wAxisY = 0
+    vjoy.data.wAxisZRot = 0
+    vjoy.update()
+
+    time.sleep(1)
+
+    # Derecha
+    vjoy.data.wAxisX = MAXIMO
+    vjoy.update()
+
+    time.sleep(1)
+
+    # Centro
+    vjoy.data.wAxisX = CENTRO
+    vjoy.update()
+
+    print("Eje X enviado.")
+    print("Content Manager debería mostrar vJoy X / Steering.")
+
+
+def mover_acelerador():
+    """
+    Mueve SOLAMENTE el eje Y.
+    Content Manager debe detectar Throttle.
+    """
+
+    print()
+    print("----------------------------------------------")
+    print("ACELERADOR - EJE Y")
+    print("----------------------------------------------")
+    print("Haz clic en THROTTLE dentro de Content Manager.")
+    print("Cuando esté esperando el eje, presiona ENTER.")
+    input()
+
+    print("Moviendo eje Y...")
+
+    # 0%
+    vjoy.data.wAxisX = CENTRO
+    vjoy.data.wAxisY = 0
+    vjoy.data.wAxisZRot = 0
+    vjoy.update()
+
+    time.sleep(0.5)
+
+    # 50%
+    vjoy.data.wAxisY = 16384
+    vjoy.update()
+
+    time.sleep(1)
+
+    # 100%
+    vjoy.data.wAxisY = MAXIMO
+    vjoy.update()
+
+    time.sleep(1)
+
+    # Volver a 0
+    vjoy.data.wAxisY = 0
+    vjoy.update()
+
+    print("Eje Y enviado.")
+    print("Content Manager debería mostrar vJoy Y / Throttle.")
+
+
+def mover_freno():
+    """
+    Mueve SOLAMENTE el eje RZ.
+    Content Manager debe detectar Brake.
+    """
+
+    print()
+    print("----------------------------------------------")
+    print("FRENO - EJE RZ")
+    print("----------------------------------------------")
+    print("Haz clic en BRAKE dentro de Content Manager.")
+    print("Cuando esté esperando el eje, presiona ENTER.")
+    input()
+
+    print("Moviendo eje RZ...")
+
+    # 0%
+    vjoy.data.wAxisX = CENTRO
+    vjoy.data.wAxisY = 0
+    vjoy.data.wAxisZRot = 0
+    vjoy.update()
+
+    time.sleep(0.5)
+
+    # 50%
+    vjoy.data.wAxisZRot = 16384
+    vjoy.update()
+
+    time.sleep(1)
+
+    # 100%
+    vjoy.data.wAxisZRot = MAXIMO
+    vjoy.update()
+
+    time.sleep(1)
+
+    # Volver a 0
+    vjoy.data.wAxisZRot = 0
+    vjoy.update()
+
+    print("Eje RZ enviado.")
+    print("Content Manager debería mostrar vJoy RZ / Brake.")
+
+
+# ============================================================
+# INICIO
+# ============================================================
+
+centro()
+
+print("El programa está listo.")
+print()
+print("IMPORTANTE:")
+print("Tú debes hacer clic manualmente en cada control")
+print("de Content Manager antes de presionar ENTER.")
+print()
+print("Asignación:")
+print("  X  = Steering")
+print("  Y  = Throttle")
+print("  RZ = Brake")
+print()
+
+
+# ============================================================
+# 1 - VOLANTE
+# ============================================================
+
+mover_volante()
+
+
+# ============================================================
+# 2 - ACELERADOR
+# ============================================================
+
+mover_acelerador()
+
+
+# ============================================================
+# 3 - FRENO
+# ============================================================
+
+mover_freno()
+
+
+# ============================================================
+# FINAL
+# ============================================================
+
+centro()
+
+print()
+print("==============================================")
+print("CONFIGURACIÓN TERMINADA")
+print("==============================================")
+print()
+print("X  -> Steering")
+print("Y  -> Throttle")
+print("RZ -> Brake")
+print()
+print("Todos los ejes quedaron en reposo.")
+print()
+
+input("Presiona ENTER para cerrar...")
