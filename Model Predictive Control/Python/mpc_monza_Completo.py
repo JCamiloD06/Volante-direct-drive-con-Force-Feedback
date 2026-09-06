@@ -652,7 +652,7 @@ def main(use_ffbeast=False):
         # en la velocidad máxima real de tu auto en Monza (ej. si llega a
         # ~250 km/h a fondo, usa K≈250) — ver README_acelerador_freno.md,
         # sección 5, para el detalle completo de por qué.
-        'throttle': {'K': 122.8, 'tau': 2.81},
+        'throttle': {'K': 20, 'tau': 2.81},
 
         # Brake: YA NO es K/tau — ver el docstring de MPCLongitudinalController
         # más arriba para la explicación completa del cambio de modelo.

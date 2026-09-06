@@ -13,15 +13,16 @@ El objetivo es que el MPC calcule el **torque de referencia** que el motor debe 
 - Generar la sensación de *force feedback* de forma suave y acotada (sin saturaciones bruscas de torque).
 - (En la variante 3D) Traducir el giro del volante en el **ángulo de dirección de un vehículo simulado** (modelo bicicleta), cerrando el lazo volante → vehículo → visualización 3D.
 
-El desarrollo está dividido en 4 artefactos:
+El desarrollo está dividido en 5 artefactos:
 
 | Archivo | Rol dentro del proyecto |
 |---|---|
-| `Modelo.m` | Obtiene el modelo dinámico del volante en espacio de estados (continuo y discreto) |
+| `Modelo.m` | Obtiene el modelo dinámico del volante en espacio de estados (continuo y discreto). **Dependencia funcional:** genera `sys_c`/`sys_d` en el workspace, que `MPC_View_2D.slx` y `MPC_View_3D.slx` necesitan para simular — no es solo documentación |
 | `MPC_View_2D.slx` | Simulink: MPC controlando el volante aislado (θ vs θ_ref) |
 | `MPC_View_3D.slx` | Simulink: MPC + volante + modelo de vehículo (bicicleta) + escena 3D |
 | `Validacion.m` | Post-proceso: métricas de error de seguimiento, trayectoria XY, curvatura y velocidad |
 | `MPCDesignerSessionPython.mat` | Sesión guardada de la app **MPC Designer** de MATLAB (contiene el objeto `mpc1` ya diseñado/ajustado) |
+| `mpc_ambos_modelos.m` | Script standalone con la **derivación matemática completa de los dos MPC del proyecto** (dirección y longitudinal), pensado como apoyo para la sección de metodología del reporte — ver sección 7. **No alimenta a Simulink:** deriva su propio modelo internamente (por Euler) solo con fines de reporte; aunque la matemática de dirección se solapa con `Modelo.m`, cumplen roles distintos y ninguno reemplaza al otro |
 
 > **Nota:** el objeto MPC (`mpc1`) referenciado por los bloques `Control MPC` de ambos modelos se genera/ajusta con la app *MPC Designer* y queda almacenado en `MPCDesignerSessionPython.mat`.
 
@@ -225,17 +226,157 @@ Una figura con 5 paneles: trayectoria XY, desviación lateral vs. tiempo, posici
 
 ---
 
-## 6. Cómo reproducir
+## 6. Modelo dinámico del control longitudinal (acelerador/freno)
+
+### 6.1 Hipótesis de modelado
+
+A diferencia del volante, que es un actuador físico propio con dinámica conocida derivable desde primeros principios (sección 3), el control longitudinal actúa sobre la física interna de Assetto Corsa (motor, transmisión, neumáticos) — una "caja negra" que no puede modelarse así. Por eso la respuesta de velocidad del auto ante cada pedal se **identifica empíricamente**, no se deriva.
+
+Además, a diferencia de dirección (un solo modelo con signo de entrada), aquí **throttle y freno usan modelos distintos**, porque su física es distinta.
+
+**Estado:** `v` (velocidad del auto, en km/h)
+**Entrada:** `u ∈ [-1, 1]` (positivo = acelerador, negativo = freno)
+
+### 6.2 Modelo de throttle — primer orden (K/tau)
+
+Igual que la respuesta de un motor DC o un circuito RC, la velocidad ante el acelerador se trata como un sistema de un polo:
+
+```
+tau_th · dv/dt + v = K_th · u        (u ∈ [0,1])
+```
+
+- `tau_th = 2.81 s` — identificado con `step_test_logger.py` + `identify_model.py`, consistente entre las 4 amplitudes de prueba (desv. std 0.062 s). Es el parámetro **confiable** de este modelo.
+- `K_th` — NO es confiable tal cual (varía 46% entre amplitudes): la meseta de velocidad medida en las pruebas está limitada por el corte de RPM de la marcha usada, no por una propiedad general del auto. Se deja como valor *placeholder*, pendiente de sustituir por uno basado en la velocidad máxima real del auto.
+
+### 6.3 Modelo de freno — desaceleración constante (no exponencial)
+
+A diferencia del throttle, el freno **no** se modela como un sistema de un polo. La razón es física, no de conveniencia:
+
+- El acelerador satura de forma **suave**, porque el arrastre aerodinámico que se le opone crece con `v²`.
+- El freno aplica una fricción neumático-pista aproximadamente **constante** en el rango de operación normal — no depende fuertemente de `v`.
+
+Por la segunda ley de Newton:
+
+```
+m · dv/dt = -F_freno   →   dv/dt = -a_brake_max   (constante)
+```
+
+Es un modelo de **rampa** (integrador puro con entrada constante), no de decaimiento exponencial. Esto se confirmó con datos reales: un ajuste lineal a la velocidad de frenado dio R²≈0.9989, contra R²≈0.83–0.94 forzando una exponencial. El valor identificado es `a_brake_max = 10.25 m/s²`, prácticamente constante entre las 4 amplitudes de prueba (10.09 a 10.46 m/s²) — con solo 30% de freno ya se está cerca del límite de agarre de las llantas (~1.05g), así que presionar más fuerte casi no frena más rápido.
+
+### 6.4 Discretización
+
+**Throttle** (Euler, paso de predicción interno `Ts_long = 0.2 s`, distinto del paso de actuación — ver 7.4):
+
+```
+v[k+1] = Ad_th·v[k] + Bd_th·u[k]      con   Ad_th = 1 - Ts_long/tau_th,   Bd_th = (Ts_long/tau_th)·K_th
+```
+
+**Freno** (ya es lineal en el tiempo, se discretiza directamente sin pasar por una ODE):
+
+```
+v[k+1] = max(0, v[k] - Ts·a_brake_max·|u|)
+```
+
+El `max(0, ...)` es obligatorio: el auto se detiene y se queda detenido, no puede ir a velocidades negativas — a diferencia del throttle, que no tiene ese límite incorporado matemáticamente.
+
+### 6.5 Ecuación conmutada (implementación real)
+
+En `MPCLongitudinalController`, el modelo aplicado en cada ciclo depende del signo de `u`:
+
+```python
+if u >= 0:
+    v += (ts/tau_th) * (-v + K_th*u)      # throttle: primer orden
+else:
+    v -= ts * a_brake_max * (-u)          # freno: desaceleración constante
+    v = max(0.0, v)
+```
+
+`a_brake_max` se escala proporcionalmente a `|u|` (a `u=1.0` se usa el valor medido, a `u` parcial se reduce linealmente) en vez de asumir saturación completa desde cualquier pedal — es la opción conservadora: subestima un poco el frenado a pedal parcial en vez de sobreestimarlo.
+
+### 6.6 Valores finales y validación
+
+```python
+model_params = {
+    'throttle': {'K': 122.8, 'tau': 2.81},   # K es placeholder, ver 6.2
+    'brake_a_max_ms2': 10.25,
+}
+```
+
+Pendiente: reemplazar `K=122.8` por un valor basado en la velocidad máxima real del auto en Monza; `tau=2.81` y `brake_a_max_ms2=10.25` ya están listos para usarse tal cual.
+
+`predict_velocity()` se validó de forma aislada antes de integrarse: throttle a fondo desde `v=0` sube en curva suave (exponencial); freno a fondo desde `v=100 km/h` baja en **línea recta** y hace clip exacto en 0 — coincide con el comportamiento real observado en los datos de calibración.
+
+---
+
+## 7. Modelo matemático unificado — `mpc_ambos_modelos.m`
+
+Script standalone (corre completo con F5, sin archivos externos) que consolida la **derivación matemática de los dos controladores MPC del proyecto** — dirección (volante) y longitudinal (acelerador/freno) — pensado como material de apoyo para la sección de metodología del reporte. Requiere el *Optimization Toolbox* (`fmincon`) para correr las simulaciones de lazo cerrado; si no está disponible, el script avisa y de todas formas muestra las derivaciones y gráficas de referencia.
+
+> **Nota sobre la superposición con `Modelo.m`:** la Parte 1 de este script vuelve a derivar el modelo físico del volante (mismos parámetros `J=0.02`, `b=0.1` que la sección 3), pero con un propósito distinto: aquí es solo el punto de partida para la formulación batch (Parte 2), no una dependencia que otro archivo necesite importar. `Modelo.m` sigue siendo el que hay que ejecutar para poder simular en Simulink (ver sección 7); este script es autocontenido y no sustituye a ese paso.
+
+### 7.1 Partes 1-2 — MPC de dirección (formulación batch, QP lineal genuina)
+
+A diferencia de `Modelo.m` (que discretiza con `c2d`/ZOH), aquí la discretización es por **Euler hacia adelante** sobre el mismo modelo continuo (`J=0.02`, `b=0.1`, `Ts_dir=0.05s`):
+
+```
+Ad = I + Ts·Ac        Bd = Ts·Bc
+```
+
+La predicción sobre el horizonte se condensa en forma matricial (`Theta = Phi·x0 + Gamma·U`), con `Phi` y `Gamma` construidas a partir de potencias de `Ad`. La función de costo pondera el error de seguimiento (`Q=10.41`, `Qf=10.41` para el último paso del horizonte), el esfuerzo de torque (`R=0`) y su tasa de cambio (`Rd=0.288`), sujeta a `tau_max=2.0 Nm`, `rate_max=1.0 Nm/paso` y `theta_max=1.2 rad`. Al ser un modelo lineal sin conmutación, este es un problema de control cuadrático puro, resuelto con `fmincon` (SQP) sobre un horizonte `N=10` (0.5 s), y validado con una referencia tipo "chicana" (seno truncado).
+
+### 7.2 Parte 3 — Modelo de throttle (primer orden, sin cambios)
+
+Mismo modelo K/tau identificado empíricamente en la calibración longitudinal: `tau_th·dv/dt + v = K_th·u`, con `tau_th=2.81 s` (confiable) y `K_th` como placeholder (incierto por saturación de RPM en la marcha de prueba — ver el README de calibración de acelerador/freno). Se discretiza por Euler con un paso de predicción interno `Ts_long=0.2 s` (distinto del paso de actuación, ver 6.4).
+
+### 7.3 Parte 4 — Modelo de freno: el cambio importante
+
+El freno **deja de modelarse como K/tau exponencial** y pasa a modelarse como **desaceleración constante**, con justificación física explícita en el propio script:
+
+- El acelerador satura de forma *suave* porque el arrastre aerodinámico crece con `v²`.
+- El freno aplica una fricción neumático-pista aproximadamente *constante* en el rango de operación normal, por lo que `dv/dt = -a_brake_max` (constante), no un sistema de un polo.
+
+Esto se traduce en un modelo de rampa con clip en cero:
+
+```
+v[k+1] = max(0, v[k] - Ts·a_brake_max·|u|)
+```
+
+con `a_brake_max = 10.25 m/s²` (identificado empíricamente). El `max(0, ...)` es obligatorio: el auto se detiene y se queda detenido, a diferencia del throttle, que no tiene ese límite matemático incorporado. Este cambio es consistente con el hallazgo de calibración de que un ajuste lineal a los datos de frenado da R²≈0.999, frente a R²≈0.83–0.94 forzando una exponencial.
+
+### 7.4 Parte 5 — Horizonte de predicción no uniforme (multi-rate)
+
+Dirección y longitudinal tienen constantes de tiempo muy distintas: `tau_direccion = J/b = 0.2 s` frente a `tau_throttle ≈ 2.81 s` (~14 veces más lenta). Si el MPC longitudinal predijera con el mismo `Ts=0.05 s` de dirección, un horizonte de 15 pasos solo cubriría 0.75 s — menos de un tercio de `tau_throttle`, dejando al controlador "miope" respecto a su propia dinámica. La solución: el longitudinal sigue **actuando** cada `Ts_dir=0.05 s` (misma frecuencia de reacción que dirección), pero **predice** internamente con pasos de `Ts_long=0.2 s`, de modo que `N=15` pasos cubren 3.0 s de horizonte — sí alcanza a cubrir `tau_throttle`. Es la técnica estándar de rejilla de predicción no uniforme ("move blocking") para sistemas con dinámicas de múltiple escala temporal.
+
+### 7.5 Parte 6 — Resolución del sistema conmutado longitudinal
+
+A diferencia de dirección (QP pura), el longitudinal es un **sistema conmutado**: qué ecuación aplica (throttle o freno) depende del signo de cada `u_i` de la secuencia, así que `Gamma` ya no es una matriz fija — depende de la propia solución buscada. Por eso se resuelve con `fmincon` (no `quadprog`), con pesos `Q=10.0`, `R=0.5`, `Rrate=2.0` sobre un horizonte `N=15`, `u∈[-1,1]`. Se valida con un perfil de referencia de velocidad tipo escalón (100 → 0 → 120 km/h), donde se observa explícitamente la frenada en **línea recta** hacia cero (consistente con el modelo de la Parte 4), y el comando de control conmutando de signo entre acelerador y freno.
+
+### 7.6 Parte 7 — Perfil de velocidad por curvatura (contexto)
+
+Incluida solo como contexto de dónde sale la referencia de velocidad (`v_ref`) que alimenta al MPC longitudinal en el sistema real: `v_max(s) = sqrt(ay_max/|kappa(s)|)`, seguido de un backward-pass que limita la velocidad según cuánto se puede frenar (Torricelli) desde el punto siguiente. No es un tercer MPC. El propio script remite a `mpc_longitudinal_matematica.m` para el detalle completo de esta derivación.
+
+### 7.7 Funciones auxiliares del script
+
+| Función | Rol |
+|---|---|
+| `costo_direccion` | Función de costo del MPC de dirección (seguimiento + esfuerzo + tasa de cambio) |
+| `restricciones_direccion` | Restricciones no lineales de dirección (`theta_max`, `rate_max`) para `fmincon` |
+| `costo_longitudinal` | Función de costo del MPC longitudinal, simulando internamente la conmutación throttle/freno paso a paso dentro del horizonte |
+
+---
+
+## 8. Cómo reproducir
 
 1. Ejecutar `Modelo.m` — genera `sys_c` (continuo) y `sys_d` (discreto) en el workspace, y grafica la respuesta al escalón.
 2. Abrir y diseñar/cargar el objeto `mpc1` (por ejemplo, reabriendo la sesión de `MPCDesignerSessionPython.mat` desde la app **MPC Designer**, o creándolo por código con `mpc(sys_d, Ts, Np, Nc)`).
 3. Abrir `MPC_View_2D.slx` (validación del lazo volante aislado) o `MPC_View_3D.slx` (validación con vehículo y escena 3D) y simular.
 4. Si se usa el modelo 3D, verificar que los bloques `To Workspace` (`X_pos`, `Y_pos`, `theta_real`, `theta_ref`) estén habilitados para logging.
 5. Ejecutar `Validacion.m` para obtener las 4 métricas y la figura consolidada `Validacion_MPC_Completa.png`.
+6. Para la derivación matemática y las simulaciones de referencia de ambos MPC (sin necesidad de Simulink ni de Assetto Corsa), correr `mpc_ambos_modelos.m` directamente con F5.
 
 ---
 
-## 7. Estructura de archivos
+## 9. Estructura de archivos
 
 ```
 .
@@ -244,5 +385,6 @@ Una figura con 5 paneles: trayectoria XY, desviación lateral vs. tiempo, posici
 ├── MPC_View_3D.slx                 # Simulink: MPC + volante + vehículo (bicicleta) + escena 3D
 ├── Validacion.m                    # Métricas de validación post-simulación
 ├── MPCDesignerSessionPython.mat    # Sesión de MPC Designer (objeto mpc1)
+├── mpc_ambos_modelos.m             # Derivación matemática de ambos MPC (dirección + longitudinal)
 └── Validacion_MPC_Completa.png     # (generado al correr Validacion.m)
 ```
