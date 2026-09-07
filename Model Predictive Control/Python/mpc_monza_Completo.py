@@ -209,8 +209,8 @@ class ReferenceGenerator:
 
 class SpeedProfileGenerator:
     def __init__(self, path: ReferencePath,
-                 ay_max_ms2=6.5, ax_brake_max_ms2=5.5,
-                 grip_usage_factor=0.75, v_max_recta_ms=83.3,
+                 ay_max_ms2=6.5, ax_brake_max_ms2=10.25,
+                 grip_usage_factor=0.5, v_max_recta_ms=21,
                  n_backward_passes=3):
         self.path = path
         self.ay_max = ay_max_ms2 * grip_usage_factor
@@ -602,7 +602,7 @@ def main(use_ffbeast=False):
     print(f"      {path.n} puntos | {path.total_length:.0f} m ✓")
 
     print("[2/6] Calculando perfil de velocidad (conservador)...")
-    speed_gen = SpeedProfileGenerator(path, ay_max_ms2=6.5, ax_brake_max_ms2=5.5, grip_usage_factor=0.75)
+    speed_gen = SpeedProfileGenerator(path, ay_max_ms2=6.5, ax_brake_max_ms2=10.25, grip_usage_factor=0.95)
     print(f"      v_max: {speed_gen.v_max.min()*3.6:.0f}–{speed_gen.v_max.max()*3.6:.0f} km/h ✓")
 
     print("[3/6] Conectando a AC (shared memory)...")
@@ -652,7 +652,7 @@ def main(use_ffbeast=False):
         # en la velocidad máxima real de tu auto en Monza (ej. si llega a
         # ~250 km/h a fondo, usa K≈250) — ver README_acelerador_freno.md,
         # sección 5, para el detalle completo de por qué.
-        'throttle': {'K': 20, 'tau': 2.81},
+        'throttle': {'K': 122.8, 'tau': 2.81},
 
         # Brake: YA NO es K/tau — ver el docstring de MPCLongitudinalController
         # más arriba para la explicación completa del cambio de modelo.
