@@ -300,12 +300,41 @@ class ReferenceGenerator:
         self.last_Ld = 0.0
         self.last_k_ey_eff = 0.0
         self.last_alpha0 = 0.0
-        self.last_delta_pp0 = 0.0
-        self.last_delta_ff0 = 0.0
+        self.last_fb_cmd = 0.0
+        self.last_ff_cmd = 0.0
         self.last_kappa0 = 0.0
         self.last_theta_ref_last = 0.0
 
     def generate(self, e_y, e_psi, path: ReferencePath, idx, speed_ms, N, Ts):
+        """
+        Los dos términos NO llevan el mismo signo, y ese fue el error que
+        vaciaba de sentido toda la referencia en curva.
+
+        `delta_pp0` sale de la geometría de pure pursuit, expresada en el
+        convenio de `e_y` y `e_psi`. `delta_ff` es el ángulo de rueda
+        cinemático de la trazada, `L` por la curvatura, expresado en el
+        convenio del ángulo de rueda. Los dos convenios son opuestos entre
+        sí, de modo que aplicarles un único `steer_sign` común deja uno de
+        los dos apuntando al revés.
+
+        Verificado sobre la corrida del 2026-09-09 con tres relaciones
+        cinemáticas medidas. La derivada de `e_y` vale más 0.978 por
+        `v` por el seno de `e_psi` con R² de 0.989. La derivada de `e_psi`
+        vale más 0.900 por la diferencia entre la guiñada del vehículo y la
+        de la trazada con R² de 0.714. Y la guiñada del vehículo vale más
+        0.806 por `delta` por `v` entre `L` con R² de 0.903. Encadenadas
+        dicen que un ángulo de rueda positivo hace crecer `e_y`, y que para
+        seguir una curvatura positiva hace falta ángulo positivo.
+
+        Contrastado contra lo que hacía el código, la realimentación
+        aportaba al comando con correlación de menos 0.774 frente a `e_y`,
+        que es lo correcto, mientras el feedforward aportaba con correlación
+        de menos 0.998 frente a la curvatura, cuando debía ser positiva. En
+        cada curva el feedforward empujaba hacia afuera y la realimentación
+        tenía que vencerlo además de trazar, para lo cual el error lateral
+        tenía que crecer. De ahí que en recta el seguimiento fuese correcto
+        y en curva el vehículo se saliese por fuera de forma sistemática.
+        """
         Ld = max(5.0, self.Ld_base + self.Ld_speed_gain * speed_ms)
         k_ey_eff = self.k_ey / (1.0 + self.k_ey_v_decay * max(0.0, speed_ms))
         alpha0 = e_psi + math.atan2(k_ey_eff * e_y, Ld)
@@ -316,14 +345,17 @@ class ReferenceGenerator:
         sat_steps = 0
         for k in range(N):
             kappa_k = path.curvature_at_offset(idx, dist_per_step * (k + 1))
-            delta_ff = self.L * kappa_k
             decay = self.error_decay ** k
-            delta_total = self.steer_sign * (decay * delta_pp0 + self.ff_gain * delta_ff)
+            # Aportación de cada término AL COMANDO, ya con su signo propio.
+            fb_cmd = self.steer_sign * decay * delta_pp0
+            ff_cmd = -self.steer_sign * self.ff_gain * self.L * kappa_k
+            delta_total = fb_cmd + ff_cmd
             theta_unclipped = delta_total * self.n
             if k == 0:
                 self.last_theta0_unclipped = float(theta_unclipped)
                 self.last_kappa0 = float(kappa_k)
-                self.last_delta_ff0 = float(self.ff_gain * delta_ff)
+                self.last_fb_cmd = float(fb_cmd)
+                self.last_ff_cmd = float(ff_cmd)
             if abs(theta_unclipped) > self.theta_clip:
                 sat_steps += 1
             theta_ref[k] = np.clip(theta_unclipped, -self.theta_clip, self.theta_clip)
@@ -332,7 +364,6 @@ class ReferenceGenerator:
         self.last_Ld = float(Ld)
         self.last_k_ey_eff = float(k_ey_eff)
         self.last_alpha0 = float(alpha0)
-        self.last_delta_pp0 = float(delta_pp0)
         self.last_theta_ref_last = float(theta_ref[-1])
         return theta_ref
 
@@ -825,7 +856,11 @@ TELEMETRY_COLUMNS = [
     # --- Velocidad ---
     "v_real_kmh", "v_target_kmh", "v_limit_kmh", "v_from_vector_kmh",
     # --- Desglose de la referencia de dirección ---
-    "Ld_m", "k_ey_eff", "alpha0_rad", "delta_pp0_rad", "delta_ff0_rad",
+    # fb_cmd_rad y ff_cmd_rad son la aportación de cada término AL COMANDO,
+    # ya con su signo propio, no los términos crudos. Los paquetes anteriores
+    # al 2026-09-09 usaban las columnas delta_pp0_rad y delta_ff0_rad, que
+    # guardaban los términos antes de aplicar el signo, y no son comparables.
+    "Ld_m", "k_ey_eff", "alpha0_rad", "fb_cmd_rad", "ff_cmd_rad",
     "theta_ref0_deg", "theta_ref_last_deg", "theta_ref0_unclipped_deg",
     "theta_ref_sat_steps",
     # --- Estado y mando de la dirección ---
@@ -1047,6 +1082,44 @@ class RunRecorder:
         except Exception as e:
             s["cal_aviso"] = f"no se pudo reidentificar la cadena: {e}"
 
+        # --- Comprobación de signos de la referencia de dirección ---
+        # La cadena cinemática dice que un ángulo de rueda positivo hace
+        # crecer e_y, y que seguir una curvatura positiva exige ángulo
+        # positivo. De ahí salen dos condiciones que deben cumplirse siempre.
+        # La aportación de la realimentación al comando tiene que
+        # correlacionar NEGATIVAMENTE con e_y, y la del feedforward
+        # POSITIVAMENTE con la curvatura de la trazada. Un error de signo en
+        # cualquiera de las dos deja el vehículo abriéndose en toda curva
+        # mientras en recta parece ir bien, que es difícil de ver a ojo.
+        try:
+            fb = num("fb_cmd_rad")
+            ffw = num("ff_cmd_rad")
+            kap = num("kappa_path")
+            ey_s = num("e_y_m")
+            fuera_s = num("tyres_out")
+            m = (fuera_s == 0) & (np.abs(kap) > 0.003)
+            if int(m.sum()) >= 50:
+                def corr(a, b):
+                    if np.std(a) < 1e-12 or np.std(b) < 1e-12:
+                        return 0.0
+                    return float(np.corrcoef(a, b)[0, 1])
+                c_fb = corr(fb[m], ey_s[m])
+                c_ff = corr(ffw[m], kap[m])
+                s["signo_realim_vs_e_y_corr"] = round(c_fb, 3)
+                s["signo_feedfwd_vs_curvatura_corr"] = round(c_ff, 3)
+                fallos = []
+                if c_fb > -0.2:
+                    fallos.append("la realimentacion no se opone al error lateral")
+                if c_ff < 0.2:
+                    fallos.append("el feedforward no acompana a la curvatura")
+                s["signos_referencia"] = "correctos" if not fallos else "; ".join(fallos)
+                if fallos:
+                    s["signos_aviso"] = ("ERROR DE SIGNO en la referencia de direccion. "
+                                         "El vehiculo se abrira en todas las curvas "
+                                         "aunque en recta parezca correcto.")
+        except Exception:
+            pass
+
         # Ángulo de deriva. Entre `heading` de Assetto Corsa y la dirección
         # del vector velocidad hay un desfase de convención cercano a 90
         # grados, así que la columna cruda no es la deriva. Se estima el
@@ -1225,12 +1298,16 @@ CFG = {
     #
     # rueda_rad_eje_completo son los radianes de rueda directriz que el
     # vehículo toma de verdad cuando el eje de vJoy va a su extremo.
-    # Identificado sobre la corrida del 2026-09-09 por dos vías
-    # independientes que concuerdan. La velocidad de guiñada da
-    # rueda = 0.468 por steerAngle con R² de 0.955, y el ajuste de una
-    # circunferencia a tres posiciones de la trayectoria separadas cuatro
-    # metros da 0.446 con R² de 0.927. Con el eje a fondo steerAngle llega a
-    # 0.355, luego el tope es 0.355 por 0.4569 igual a 0.1622 rad.
+    # Identificado por velocidad de guiñada y confirmado por el ajuste de
+    # una circunferencia a tres posiciones de la trayectoria. Una unidad de
+    # steerAngle equivale a entre 0.453 y 0.457 rad de rueda, valor estable
+    # entre corridas porque es una propiedad del vehículo. El tope es ese
+    # factor por el alcance del eje, que depende de la configuración del
+    # mando en Assetto Corsa.
+    #
+    # Historial. Con la casilla de ajuste automático de escala desmarcada el
+    # tope era 0.1622 rad, es decir 9.3 grados de rueda. Marcándola pasó a
+    # 0.3939 rad, o sea 22.6 grados, que es el valor vigente.
     #
     # Con el par anterior la cadena multiplicaba por 2.15 el ángulo pedido.
     # Ese exceso de ganancia es lo que mantenía el lazo oscilando, y
@@ -1239,7 +1316,7 @@ CFG = {
     # HAY QUE VOLVER A MEDIRLA si cambia la configuración del mando en
     # Assetto Corsa, el vehículo o el bloqueo de dirección. El resumen de
     # cada corrida vuelve a identificarla y avisa si se aleja de este valor.
-    "rueda_rad_eje_completo": 0.1622,
+    "rueda_rad_eje_completo": 0.3939,
     "theta_clip_rad": 1.2,
     "vjoy_max_rad": 1.2,
 }
@@ -1527,8 +1604,8 @@ def main(use_ffbeast=False):
                 round(float(v_limit_kmh), 3),
                 round(3.6 * math.sqrt(car_vx ** 2 + car_vy ** 2 + car_vz ** 2), 3),
                 round(ref_gen.last_Ld, 3), round(ref_gen.last_k_ey_eff, 5),
-                round(ref_gen.last_alpha0, 6), round(ref_gen.last_delta_pp0, 6),
-                round(ref_gen.last_delta_ff0, 6),
+                round(ref_gen.last_alpha0, 6), round(ref_gen.last_fb_cmd, 6),
+                round(ref_gen.last_ff_cmd, 6),
                 round(math.degrees(theta_ref_seq[0]), 4),
                 round(math.degrees(ref_gen.last_theta_ref_last), 4),
                 round(math.degrees(ref_gen.last_theta0_unclipped), 4),
