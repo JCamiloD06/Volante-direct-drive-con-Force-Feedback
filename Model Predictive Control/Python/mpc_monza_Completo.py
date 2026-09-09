@@ -180,16 +180,26 @@ class ReferencePath:
 
 class ReferenceGenerator:
     def __init__(self, wheelbase_L, steering_ratio_n, Ld_base=2.5, error_decay=0.998,
-                 steer_sign=-1):
+                 steer_sign=-1, k_ey=0.6, ff_gain=0.85):
         self.L = wheelbase_L
         self.n = steering_ratio_n
         self.Ld_base = Ld_base
         self.error_decay = error_decay
         self.steer_sign = steer_sign
+        # k_ey  -> peso del error lateral en el reenganche a la linea de
+        #          referencia. Mas alto devuelve el auto a la trazada mas
+        #          rapido, que es la prioridad pedida (trazada prolija sin
+        #          salirse de pista). Valor previo 0.3, subido a 0.6.
+        # ff_gain -> fraccion del termino kinematico de curvatura que se
+        #          usa como feedforward. Con 1.0 el volante ya entra en la
+        #          curva siguiendo la geometria real; se deja en 0.85 para
+        #          dejar margen al MPC y evitar sobreviraje. Valor previo 0.5.
+        self.k_ey = k_ey
+        self.ff_gain = ff_gain
 
     def generate(self, e_y, e_psi, path: ReferencePath, idx, speed_ms, N, Ts):
         Ld = max(5.0, self.Ld_base + 0.5 * speed_ms)
-        alpha0 = e_psi + math.atan2(0.3 * e_y, Ld)
+        alpha0 = e_psi + math.atan2(self.k_ey * e_y, Ld)
         delta_pp0 = math.atan2(2 * self.L * math.sin(alpha0), Ld)
         dist_per_step = max(0.5, speed_ms * Ts)
 
@@ -198,7 +208,7 @@ class ReferenceGenerator:
             kappa_k = path.curvature_at_offset(idx, dist_per_step * (k + 1))
             delta_ff = self.L * kappa_k
             decay = self.error_decay ** k
-            delta_total = self.steer_sign * (decay * delta_pp0 + 0.5 * delta_ff)
+            delta_total = self.steer_sign * (decay * delta_pp0 + self.ff_gain * delta_ff)
             theta_ref[k] = np.clip(delta_total * self.n, -1.2, 1.2)
         return theta_ref
 
@@ -557,6 +567,53 @@ class FFBeastSteeringPlant:
 
 
 # =============================================================================
+# SECCIÓN 5B — CONFORMADOR DE PEDAL (acelerador y freno progresivos)
+# =============================================================================
+
+class PedalShaper:
+    """
+    Suaviza el comando longitudinal del MPC antes de mandarlo a vJoy.
+
+    El MPC longitudinal ya penaliza el cambio de u con el termino R_rate,
+    pero eso no acota la rampa cuando el objetivo de velocidad salta de
+    golpe (entrada a curva, cambio de sector) ni cuando el comando cruza de
+    gas a freno. Aqui se impone una rampa explicita. El pedal tarda un
+    tiempo minimo fijo en recorrer todo el rango de 0 a 100 por ciento, con
+    constantes de subida y de bajada independientes para gas y para freno.
+
+    El estado interno u_shaped vive en el intervalo menos uno a uno, con
+    signo positivo para gas y negativo para freno, y es continuo. Al
+    cambiar de pedal pasa por cero, de modo que la transicion de gas a
+    freno tambien resulta progresiva.
+    """
+    def __init__(self, ts,
+                 throttle_rise_s=0.60, throttle_fall_s=0.35,
+                 brake_rise_s=0.45, brake_fall_s=0.30):
+        self.d_th_up = ts / max(throttle_rise_s, 1e-3)
+        self.d_th_dn = ts / max(throttle_fall_s, 1e-3)
+        self.d_br_up = ts / max(brake_rise_s, 1e-3)
+        self.d_br_dn = ts / max(brake_fall_s, 1e-3)
+        self.u = 0.0
+
+    def shape(self, u_target):
+        u_target = float(np.clip(u_target, -1.0, 1.0))
+        u = self.u
+        if u_target > u:
+            # sube el comando: mas gas si u>=0, o soltar freno si u<0
+            step = self.d_th_up if u >= 0.0 else self.d_br_dn
+            u = min(u_target, u + step)
+        elif u_target < u:
+            # baja el comando: soltar gas si u>0, o mas freno si u<=0
+            step = self.d_th_dn if u > 0.0 else self.d_br_up
+            u = max(u_target, u - step)
+        self.u = u
+        return u
+
+    def reset(self):
+        self.u = 0.0
+
+
+# =============================================================================
 # SECCIÓN 6 — SALIDA A VJOY (3 ejes: X=steer, Y=gas, RZ=freno)
 # =============================================================================
 
@@ -602,7 +659,10 @@ def main(use_ffbeast=False):
     print(f"      {path.n} puntos | {path.total_length:.0f} m ✓")
 
     print("[2/6] Calculando perfil de velocidad (conservador)...")
-    speed_gen = SpeedProfileGenerator(path, ay_max_ms2=6.5, ax_brake_max_ms2=10.25, grip_usage_factor=0.95)
+    # grip_usage_factor bajado de 0.95 a 0.85: se prioriza una trazada
+    # prolija dentro de pista sobre el ritmo, dejando mas margen de agarre
+    # lateral para curva y para el reenganche a la linea de referencia.
+    speed_gen = SpeedProfileGenerator(path, ay_max_ms2=6.5, ax_brake_max_ms2=10.25, grip_usage_factor=0.85)
     print(f"      v_max: {speed_gen.v_max.min()*3.6:.0f}–{speed_gen.v_max.max()*3.6:.0f} km/h ✓")
 
     print("[3/6] Conectando a AC (shared memory)...")
@@ -661,6 +721,15 @@ def main(use_ffbeast=False):
         'brake_a_max_ms2': 10.25,
     }
     mpc_speed = MPCLongitudinalController(model_params, ts=0.05, horizon=10)
+    pedal = PedalShaper(ts=Ts)
+
+    # Derateo de velocidad objetivo por error lateral: si el auto se aleja
+    # de la linea de referencia se recorta la velocidad para facilitar el
+    # reenganche sin salir de pista. Entre EY_SOFT_M y EY_HARD_M el factor
+    # baja de forma lineal hasta EY_DERATE_MIN.
+    EY_SOFT_M = 0.8
+    EY_HARD_M = 2.5
+    EY_DERATE_MIN = 0.6
     print(f"      Dirección: N={N_steer} pasos × {Ts}s = {N_steer*Ts:.2f}s horizonte (τ_dir≈0.2s)")
     print(f"      Velocidad: N=15 pasos × 0.2s = 3.0s horizonte (τ_throttle≈2.81s) ✓")
 
@@ -673,7 +742,8 @@ def main(use_ffbeast=False):
     log_file = open(log_name, 'w', newline='')
     writer = csv.writer(log_file)
     writer.writerow(['t_s', 'e_y_m', 'theta_ref0_deg', 'theta_real_deg', 'tau_Nm',
-                      'v_real_kmh', 'v_target_kmh', 'u_cmd', 'gas', 'brake', 'loop_dt_ms'])
+                      'v_real_kmh', 'v_target_kmh', 'u_cmd_raw', 'u_cmd_shaped',
+                      'gas', 'brake', 'loop_dt_ms'])
 
     print()
     if use_ffbeast:
@@ -737,12 +807,18 @@ def main(use_ffbeast=False):
 
             # --- Velocidad ---
             v_target_kmh = speed_gen.target_speed_kmh(idx, speed_ms, preview_m=20.0)
+            e_y_abs = abs(e_y)
+            if e_y_abs > EY_SOFT_M:
+                frac = (e_y_abs - EY_SOFT_M) / (EY_HARD_M - EY_SOFT_M)
+                derate = max(EY_DERATE_MIN, 1.0 - frac * (1.0 - EY_DERATE_MIN))
+                v_target_kmh *= derate
             t_speed0 = time.time()
             u_cmd = mpc_speed.compute_control(speed_kmh, v_target_kmh)
             t_speed_ms = (time.time() - t_speed0) * 1000.0
+            u_cmd_shaped = pedal.shape(u_cmd)
 
             # --- Salida conjunta ---
-            gas, brake = vjoy.send_all(theta_new, u_cmd)
+            gas, brake = vjoy.send_all(theta_new, u_cmd_shaped)
 
             cycle += 1
             t_elapsed = time.time() - t0
@@ -757,7 +833,8 @@ def main(use_ffbeast=False):
                               round(math.degrees(theta_ref_seq[0]), 3),
                               round(math.degrees(theta_new), 3), round(tau, 4),
                               round(speed_kmh, 2), round(v_target_kmh, 2),
-                              round(u_cmd, 3), round(gas, 3), round(brake, 3),
+                              round(u_cmd, 3), round(u_cmd_shaped, 3),
+                              round(gas, 3), round(brake, 3),
                               round(loop_dt_ms, 2)])
             if cycle % 20 == 0:
                 log_file.flush()
