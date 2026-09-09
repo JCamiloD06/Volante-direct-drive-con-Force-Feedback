@@ -120,7 +120,7 @@ class ACSharedMemory:
 # =============================================================================
 
 class ReferencePath:
-    def __init__(self, csv_path: str):
+    def __init__(self, csv_path: str, curvature_smooth_m=15.0):
         xs, zs, s = [], [], []
         with open(csv_path, newline="") as f:
             reader = csv.DictReader(f)
@@ -146,7 +146,24 @@ class ReferencePath:
         next_z = np.roll(self.z, -1)
         ds = np.sqrt((next_x - self.x) ** 2 + (next_z - self.z) ** 2)
         ds[ds < 1e-3] = 1e-3
-        self.curvature = dtheta / ds
+        curvature_raw = dtheta / ds
+
+        # Suavizado de curvatura con media movil circular sobre s. La
+        # curvatura sale de doble diferencia finita del centro de pista y
+        # es ruidosa. Ese ruido entra al volante por el feedforward. La
+        # ventana en metros se convierte a numero de puntos.
+        self.curvature_raw = curvature_raw
+        win = max(1, int(round(curvature_smooth_m / self.avg_spacing)))
+        if win % 2 == 0:
+            win += 1
+        if win >= 3:
+            kernel = np.ones(win) / win
+            ext = np.concatenate([curvature_raw[-(win // 2):],
+                                  curvature_raw,
+                                  curvature_raw[:win // 2]])
+            self.curvature = np.convolve(ext, kernel, mode="valid")
+        else:
+            self.curvature = curvature_raw.copy()
 
         self._last_idx = 0
 
@@ -180,26 +197,33 @@ class ReferencePath:
 
 class ReferenceGenerator:
     def __init__(self, wheelbase_L, steering_ratio_n, Ld_base=2.5, error_decay=0.998,
-                 steer_sign=-1, k_ey=0.6, ff_gain=0.85):
+                 steer_sign=-1, k_ey=0.35, k_ey_v_decay=0.03, Ld_speed_gain=0.8,
+                 ff_gain=0.55):
         self.L = wheelbase_L
         self.n = steering_ratio_n
         self.Ld_base = Ld_base
         self.error_decay = error_decay
         self.steer_sign = steer_sign
-        # k_ey  -> peso del error lateral en el reenganche a la linea de
-        #          referencia. Mas alto devuelve el auto a la trazada mas
-        #          rapido, que es la prioridad pedida (trazada prolija sin
-        #          salirse de pista). Valor previo 0.3, subido a 0.6.
-        # ff_gain -> fraccion del termino kinematico de curvatura que se
-        #          usa como feedforward. Con 1.0 el volante ya entra en la
-        #          curva siguiendo la geometria real; se deja en 0.85 para
-        #          dejar margen al MPC y evitar sobreviraje. Valor previo 0.5.
+        # k_ey         -> peso base del error lateral en el reenganche a la
+        #                 linea de referencia.
+        # k_ey_v_decay -> el peso efectivo se reduce con la velocidad como
+        #                 k_ey / (1 + k_ey_v_decay * v). Ataca el zigzag
+        #                 dependiente de velocidad sin frenar el reenganche
+        #                 a baja velocidad.
+        # Ld_speed_gain-> crecimiento del lookahead con la velocidad. Mas
+        #                 alto suaviza a alta velocidad. Valor previo 0.5.
+        # ff_gain      -> fraccion del feedforward kinematico de curvatura.
+        #                 Valor previo 0.85, bajado a 0.55 para menos
+        #                 sobreviraje y menos jitter de curvatura.
         self.k_ey = k_ey
+        self.k_ey_v_decay = k_ey_v_decay
+        self.Ld_speed_gain = Ld_speed_gain
         self.ff_gain = ff_gain
 
     def generate(self, e_y, e_psi, path: ReferencePath, idx, speed_ms, N, Ts):
-        Ld = max(5.0, self.Ld_base + 0.5 * speed_ms)
-        alpha0 = e_psi + math.atan2(self.k_ey * e_y, Ld)
+        Ld = max(5.0, self.Ld_base + self.Ld_speed_gain * speed_ms)
+        k_ey_eff = self.k_ey / (1.0 + self.k_ey_v_decay * max(0.0, speed_ms))
+        alpha0 = e_psi + math.atan2(k_ey_eff * e_y, Ld)
         delta_pp0 = math.atan2(2 * self.L * math.sin(alpha0), Ld)
         dist_per_step = max(0.5, speed_ms * Ts)
 
@@ -221,11 +245,12 @@ class SpeedProfileGenerator:
     def __init__(self, path: ReferencePath,
                  ay_max_ms2=6.5, ax_brake_max_ms2=10.25,
                  grip_usage_factor=0.5, v_max_recta_ms=50,
-                 n_backward_passes=5):
+                 n_backward_passes=5, profile_smooth_m=25.0):
         self.path = path
         self.ay_max = ay_max_ms2 * grip_usage_factor
         self.ax_brake_max = ax_brake_max_ms2 * grip_usage_factor
         self.v_cap = v_max_recta_ms
+        self.profile_smooth_m = profile_smooth_m
 
         kappa = np.abs(path.curvature)
         kappa_safe = np.maximum(kappa, 1e-5)
@@ -245,13 +270,31 @@ class SpeedProfileGenerator:
                 if v_allowed < v_max[i]:
                     v_max[i] = v_allowed
 
+        # Suavizado del perfil con media movil circular sobre s. Sin esto
+        # el objetivo de velocidad avanza a escalones cuando el indice de
+        # preview salta de punto, y el MPC longitudinal alterna gas y freno
+        # dentro de una misma curva larga.
+        win = max(1, int(round(self.profile_smooth_m / path.avg_spacing)))
+        if win % 2 == 0:
+            win += 1
+        if win >= 3:
+            kernel = np.ones(win) / win
+            ext = np.concatenate([v_max[-(win // 2):], v_max, v_max[:win // 2]])
+            v_max = np.convolve(ext, kernel, mode="valid")
+
         self.v_max = v_max  # m/s
 
-    def v_ref_at_offset(self, idx, dist_m):
+    def v_ref_at_offset(self, idx, dist_m, avg_window_m=0.0):
         idx_step = max(1, round(dist_m / self.path.avg_spacing))
-        return float(self.v_max[(idx + idx_step) % self.path.n])
+        center = idx + idx_step
+        if avg_window_m <= 0.0:
+            return float(self.v_max[center % self.path.n])
+        half = max(1, int(round(avg_window_m / self.path.avg_spacing)))
+        window_idx = (center + np.arange(-half, half + 1)) % self.path.n
+        return float(np.mean(self.v_max[window_idx]))
 
-    def target_speed_kmh(self, idx, speed_ms, preview_m=20.0):
+    def target_speed_kmh(self, idx, speed_ms, preview_m=20.0,
+                         preview_speed_gain=0.0, avg_window_m=12.0):
         """
         Devuelve UN solo valor objetivo en km/h (no una secuencia): el
         MPCLongitudinalController que ya validaste toma target_speed
@@ -262,7 +305,8 @@ class SpeedProfileGenerator:
         `preview_m` metros para que el MPC ya esté frenando antes de la
         curva, no en cuanto la detecta.
         """
-        v_ref_ms = self.v_ref_at_offset(idx, preview_m)
+        preview_eff = preview_m + preview_speed_gain * max(0.0, speed_ms)
+        v_ref_ms = self.v_ref_at_offset(idx, preview_eff, avg_window_m=avg_window_m)
         return v_ref_ms * 3.6
 
 
@@ -649,20 +693,62 @@ class VJoyOutput:
 # SECCIÓN 7 — LOOP PRINCIPAL ÚNICO
 # =============================================================================
 
+# =============================================================================
+# PARÁMETROS EXPUESTOS — paquete conservador anti sobrecorreccion
+# Todo lo que se calibra para quitar el zigzag de direccion y la alternancia
+# gas y freno en curva esta aqui reunido, no disperso por el codigo.
+# =============================================================================
+
+CFG = {
+    # --- Perfil de velocidad y trazada ---
+    "grip_usage_factor": 0.80,     # margen de agarre. Mas bajo, mas prolijo, menos ritmo
+    "curvature_smooth_m": 15.0,    # ventana de suavizado de curvatura de la trazada
+    "profile_smooth_m": 25.0,      # ventana de suavizado del perfil v_max sobre s
+
+    # --- Objetivo de velocidad que recibe el MPC longitudinal ---
+    "preview_m": 20.0,             # anticipacion base de frenado
+    "preview_speed_gain": 0.35,    # anticipacion extra por m/s de velocidad
+    "vref_avg_window_m": 12.0,     # ventana para promediar v_ref y quitar escalones
+
+    # --- Referencia de direccion (pure pursuit + feedforward) ---
+    "k_ey": 0.35,                  # peso base del error lateral
+    "k_ey_v_decay": 0.03,          # decaimiento del peso lateral con la velocidad
+    "Ld_speed_gain": 0.8,          # crecimiento del lookahead con la velocidad
+    "ff_gain": 0.55,               # fraccion del feedforward de curvatura
+
+    # --- MPC de direccion ---
+    "steer_Rd": 0.6,               # penalizacion de tasa del par. Mas alto, mando mas suave
+    "steer_R": 0.02,               # penalizacion de esfuerzo del par
+
+    # --- MPC longitudinal ---
+    "long_Q": 6.0,                 # peso de seguimiento de velocidad
+    "long_R": 1.5,                 # penalizacion de esfuerzo de pedal
+    "long_R_rate": 6.0,            # penalizacion de cambio de pedal
+    "speed_deadband_kmh": 3.0,     # banda muerta. Dentro de esto se rueda sin gas ni freno
+
+    # --- Conformador de pedal (rampas 0 a 100 por ciento) ---
+    "throttle_rise_s": 0.60,
+    "throttle_fall_s": 0.35,
+    "brake_rise_s": 0.45,
+    "brake_fall_s": 0.30,
+}
+
+
 def main(use_ffbeast=False):
     print("=" * 60)
     print("  MPC UNIFICADO — Dirección + Gas/Freno | Monza")
     print("=" * 60)
 
     print("\n[1/6] Cargando trazada...")
-    path = ReferencePath("monza_fast_lane.csv")
+    path = ReferencePath("monza_fast_lane.csv",
+                         curvature_smooth_m=CFG["curvature_smooth_m"])
     print(f"      {path.n} puntos | {path.total_length:.0f} m ✓")
 
     print("[2/6] Calculando perfil de velocidad (conservador)...")
-    # grip_usage_factor bajado de 0.95 a 0.85: se prioriza una trazada
-    # prolija dentro de pista sobre el ritmo, dejando mas margen de agarre
-    # lateral para curva y para el reenganche a la linea de referencia.
-    speed_gen = SpeedProfileGenerator(path, ay_max_ms2=6.5, ax_brake_max_ms2=10.25, grip_usage_factor=0.85)
+    speed_gen = SpeedProfileGenerator(
+        path, ay_max_ms2=6.5, ax_brake_max_ms2=10.25,
+        grip_usage_factor=CFG["grip_usage_factor"],
+        profile_smooth_m=CFG["profile_smooth_m"])
     print(f"      v_max: {speed_gen.v_max.min()*3.6:.0f}–{speed_gen.v_max.max()*3.6:.0f} km/h ✓")
 
     print("[3/6] Conectando a AC (shared memory)...")
@@ -696,8 +782,12 @@ def main(use_ffbeast=False):
     print("[6/6] Inicializando ambos MPC...")
     Ts = 0.05
     N_steer = 10
-    ref_gen = ReferenceGenerator(wheelbase_L=2.7, steering_ratio_n=16, steer_sign=-1)
-    mpc_steer = MPCSteeringController(Ts=Ts, N=N_steer)
+    ref_gen = ReferenceGenerator(
+        wheelbase_L=2.7, steering_ratio_n=16, steer_sign=-1,
+        k_ey=CFG["k_ey"], k_ey_v_decay=CFG["k_ey_v_decay"],
+        Ld_speed_gain=CFG["Ld_speed_gain"], ff_gain=CFG["ff_gain"])
+    mpc_steer = MPCSteeringController(Ts=Ts, N=N_steer,
+                                     R=CFG["steer_R"], Rd=CFG["steer_Rd"])
 
     model_params = {
         # Throttle: modelo K/tau identificado con step_test_logger.py +
@@ -721,15 +811,14 @@ def main(use_ffbeast=False):
         'brake_a_max_ms2': 10.25,
     }
     mpc_speed = MPCLongitudinalController(model_params, ts=0.05, horizon=10)
-    pedal = PedalShaper(ts=Ts)
-
-    # Derateo de velocidad objetivo por error lateral: si el auto se aleja
-    # de la linea de referencia se recorta la velocidad para facilitar el
-    # reenganche sin salir de pista. Entre EY_SOFT_M y EY_HARD_M el factor
-    # baja de forma lineal hasta EY_DERATE_MIN.
-    EY_SOFT_M = 0.8
-    EY_HARD_M = 2.5
-    EY_DERATE_MIN = 0.6
+    mpc_speed.Q = CFG["long_Q"]
+    mpc_speed.R = CFG["long_R"]
+    mpc_speed.R_rate = CFG["long_R_rate"]
+    pedal = PedalShaper(ts=Ts,
+                        throttle_rise_s=CFG["throttle_rise_s"],
+                        throttle_fall_s=CFG["throttle_fall_s"],
+                        brake_rise_s=CFG["brake_rise_s"],
+                        brake_fall_s=CFG["brake_fall_s"])
     print(f"      Dirección: N={N_steer} pasos × {Ts}s = {N_steer*Ts:.2f}s horizonte (τ_dir≈0.2s)")
     print(f"      Velocidad: N=15 pasos × 0.2s = 3.0s horizonte (τ_throttle≈2.81s) ✓")
 
@@ -806,16 +895,28 @@ def main(use_ffbeast=False):
             last_tau_applied = tau
 
             # --- Velocidad ---
-            v_target_kmh = speed_gen.target_speed_kmh(idx, speed_ms, preview_m=20.0)
-            e_y_abs = abs(e_y)
-            if e_y_abs > EY_SOFT_M:
-                frac = (e_y_abs - EY_SOFT_M) / (EY_HARD_M - EY_SOFT_M)
-                derate = max(EY_DERATE_MIN, 1.0 - frac * (1.0 - EY_DERATE_MIN))
-                v_target_kmh *= derate
+            # El recorte de velocidad queda solo por curvatura de pista, que
+            # ya vive en speed_gen.v_max. No se recorta por e_y para no
+            # acoplar la oscilacion lateral al lazo longitudinal.
+            v_target_kmh = speed_gen.target_speed_kmh(
+                idx, speed_ms,
+                preview_m=CFG["preview_m"],
+                preview_speed_gain=CFG["preview_speed_gain"],
+                avg_window_m=CFG["vref_avg_window_m"])
             t_speed0 = time.time()
             u_cmd = mpc_speed.compute_control(speed_kmh, v_target_kmh)
             t_speed_ms = (time.time() - t_speed0) * 1000.0
+
+            # Banda muerta: dentro de +-speed_deadband_kmh se rueda sin gas
+            # ni freno, elimina el hunting fino a mitad de curva.
+            if abs(speed_kmh - v_target_kmh) < CFG["speed_deadband_kmh"]:
+                u_cmd = 0.0
+
             u_cmd_shaped = pedal.shape(u_cmd)
+            # Cierra el lazo del conformador con el MPC: el MPC toma como
+            # comando previo el que de verdad se aplico, no el que el pidio,
+            # asi no pelea contra el retardo de su propio actuador.
+            mpc_speed.u_prev = u_cmd_shaped
 
             # --- Salida conjunta ---
             gas, brake = vjoy.send_all(theta_new, u_cmd_shaped)
