@@ -179,7 +179,7 @@ class ReferencePath:
 # =============================================================================
 
 class ReferenceGenerator:
-    def __init__(self, wheelbase_L, steering_ratio_n, Ld_base=3.0, error_decay=0.998,
+    def __init__(self, wheelbase_L, steering_ratio_n, Ld_base=2.5, error_decay=0.998,
                  steer_sign=-1):
         self.L = wheelbase_L
         self.n = steering_ratio_n
@@ -210,8 +210,8 @@ class ReferenceGenerator:
 class SpeedProfileGenerator:
     def __init__(self, path: ReferencePath,
                  ay_max_ms2=6.5, ax_brake_max_ms2=10.25,
-                 grip_usage_factor=0.5, v_max_recta_ms=21,
-                 n_backward_passes=3):
+                 grip_usage_factor=0.5, v_max_recta_ms=50,
+                 n_backward_passes=5):
         self.path = path
         self.ay_max = ay_max_ms2 * grip_usage_factor
         self.ax_brake_max = ax_brake_max_ms2 * grip_usage_factor
@@ -241,7 +241,7 @@ class SpeedProfileGenerator:
         idx_step = max(1, round(dist_m / self.path.avg_spacing))
         return float(self.v_max[(idx + idx_step) % self.path.n])
 
-    def target_speed_kmh(self, idx, speed_ms, preview_m=15.0):
+    def target_speed_kmh(self, idx, speed_ms, preview_m=20.0):
         """
         Devuelve UN solo valor objetivo en km/h (no una secuencia): el
         MPCLongitudinalController que ya validaste toma target_speed
@@ -370,7 +370,7 @@ class MPCLongitudinalController:
         un poco el frenado a pedal parcial en vez de sobreestimarlo, que
         es la dirección segura del error.
     """
-    def __init__(self, model_params, ts=0.2, horizon=15):
+    def __init__(self, model_params, ts=0.05, horizon=10):
         self.ts = ts
         self.N = horizon
         self.K_th = model_params['throttle']['K']
@@ -660,7 +660,7 @@ def main(use_ffbeast=False):
         # idéntica (10.1-10.5 m/s², R²≈0.999) en las 4 amplitudes de prueba.
         'brake_a_max_ms2': 10.25,
     }
-    mpc_speed = MPCLongitudinalController(model_params, ts=0.2, horizon=15)
+    mpc_speed = MPCLongitudinalController(model_params, ts=0.05, horizon=10)
     print(f"      Dirección: N={N_steer} pasos × {Ts}s = {N_steer*Ts:.2f}s horizonte (τ_dir≈0.2s)")
     print(f"      Velocidad: N=15 pasos × 0.2s = 3.0s horizonte (τ_throttle≈2.81s) ✓")
 
@@ -736,7 +736,7 @@ def main(use_ffbeast=False):
             last_tau_applied = tau
 
             # --- Velocidad ---
-            v_target_kmh = speed_gen.target_speed_kmh(idx, speed_ms, preview_m=15.0)
+            v_target_kmh = speed_gen.target_speed_kmh(idx, speed_ms, preview_m=20.0)
             t_speed0 = time.time()
             u_cmd = mpc_speed.compute_control(speed_kmh, v_target_kmh)
             t_speed_ms = (time.time() - t_speed0) * 1000.0
