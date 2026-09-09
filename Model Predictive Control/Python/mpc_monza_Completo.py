@@ -197,8 +197,8 @@ class ReferencePath:
 
 class ReferenceGenerator:
     def __init__(self, wheelbase_L, steering_ratio_n, Ld_base=2.5, error_decay=0.998,
-                 steer_sign=-1, k_ey=0.35, k_ey_v_decay=0.03, Ld_speed_gain=0.8,
-                 ff_gain=0.55):
+                 steer_sign=-1, k_ey=0.50, k_ey_v_decay=0.0, Ld_speed_gain=0.6,
+                 ff_gain=1.0, theta_clip=1.2):
         self.L = wheelbase_L
         self.n = steering_ratio_n
         self.Ld_base = Ld_base
@@ -206,19 +206,28 @@ class ReferenceGenerator:
         self.steer_sign = steer_sign
         # k_ey         -> peso base del error lateral en el reenganche a la
         #                 linea de referencia.
-        # k_ey_v_decay -> el peso efectivo se reduce con la velocidad como
-        #                 k_ey / (1 + k_ey_v_decay * v). Ataca el zigzag
-        #                 dependiente de velocidad sin frenar el reenganche
-        #                 a baja velocidad.
-        # Ld_speed_gain-> crecimiento del lookahead con la velocidad. Mas
-        #                 alto suaviza a alta velocidad. Valor previo 0.5.
+        # k_ey_v_decay -> reduce el peso efectivo con la velocidad como
+        #                 k_ey / (1 + k_ey_v_decay * v). En 0 queda anulado.
+        #                 Con ff_gain igual a 1 ya no hay sesgo estructural
+        #                 que la realimentacion tenga que compensar, asi que
+        #                 no hace falta debilitarla a alta velocidad.
+        # Ld_speed_gain-> crecimiento del lookahead con la velocidad.
         # ff_gain      -> fraccion del feedforward kinematico de curvatura.
-        #                 Valor previo 0.85, bajado a 0.55 para menos
-        #                 sobreviraje y menos jitter de curvatura.
+        #                 Por debajo de 1 la realimentacion tiene que cerrar
+        #                 el deficit y para hacerlo necesita que el error
+        #                 lateral crezca, lo que produce un error de regimen
+        #                 permanente en curva sostenida. En 1 ese error es
+        #                 cero por construccion.
         self.k_ey = k_ey
         self.k_ey_v_decay = k_ey_v_decay
         self.Ld_speed_gain = Ld_speed_gain
         self.ff_gain = ff_gain
+        self.theta_clip = theta_clip
+        # Instrumentacion: cuantos pasos del horizonte quedaron recortados
+        # por theta_clip en la ultima llamada, y cual habria sido el valor
+        # sin recortar en el primer paso.
+        self.last_sat_steps = 0
+        self.last_theta0_unclipped = 0.0
 
     def generate(self, e_y, e_psi, path: ReferencePath, idx, speed_ms, N, Ts):
         Ld = max(5.0, self.Ld_base + self.Ld_speed_gain * speed_ms)
@@ -228,12 +237,19 @@ class ReferenceGenerator:
         dist_per_step = max(0.5, speed_ms * Ts)
 
         theta_ref = np.zeros(N)
+        sat_steps = 0
         for k in range(N):
             kappa_k = path.curvature_at_offset(idx, dist_per_step * (k + 1))
             delta_ff = self.L * kappa_k
             decay = self.error_decay ** k
             delta_total = self.steer_sign * (decay * delta_pp0 + self.ff_gain * delta_ff)
-            theta_ref[k] = np.clip(delta_total * self.n, -1.2, 1.2)
+            theta_unclipped = delta_total * self.n
+            if k == 0:
+                self.last_theta0_unclipped = float(theta_unclipped)
+            if abs(theta_unclipped) > self.theta_clip:
+                sat_steps += 1
+            theta_ref[k] = np.clip(theta_unclipped, -self.theta_clip, self.theta_clip)
+        self.last_sat_steps = sat_steps
         return theta_ref
 
 
@@ -270,44 +286,57 @@ class SpeedProfileGenerator:
                 if v_allowed < v_max[i]:
                     v_max[i] = v_allowed
 
-        # Suavizado del perfil con media movil circular sobre s. Sin esto
-        # el objetivo de velocidad avanza a escalones cuando el indice de
-        # preview salta de punto, y el MPC longitudinal alterna gas y freno
-        # dentro de una misma curva larga.
+        # v_limit es el limite fisico local, sin suavizar. Se conserva como
+        # referencia de seguridad y para diagnostico.
+        self.v_limit = v_max.copy()  # m/s
+
+        # Suavizado opcional del perfil, pero SOLO hacia abajo. Una media
+        # movil simetrica sube el perfil en el minimo de cada curva, o sea
+        # justo donde el limite de agarre es mas exigente, y ese sobrepaso
+        # se traduce en subviraje. Al recortar con el minimo entre el perfil
+        # suavizado y el original el filtro solo puede volver mas
+        # conservador el objetivo, nunca mas agresivo.
         win = max(1, int(round(self.profile_smooth_m / path.avg_spacing)))
         if win % 2 == 0:
             win += 1
         if win >= 3:
             kernel = np.ones(win) / win
             ext = np.concatenate([v_max[-(win // 2):], v_max, v_max[:win // 2]])
-            v_max = np.convolve(ext, kernel, mode="valid")
+            v_max = np.minimum(np.convolve(ext, kernel, mode="valid"), v_max)
 
         self.v_max = v_max  # m/s
 
-    def v_ref_at_offset(self, idx, dist_m, avg_window_m=0.0):
-        idx_step = max(1, round(dist_m / self.path.avg_spacing))
-        center = idx + idx_step
-        if avg_window_m <= 0.0:
-            return float(self.v_max[center % self.path.n])
-        half = max(1, int(round(avg_window_m / self.path.avg_spacing)))
-        window_idx = (center + np.arange(-half, half + 1)) % self.path.n
-        return float(np.mean(self.v_max[window_idx]))
+    def v_ref_min_ahead(self, idx, preview_m):
+        """
+        Minimo del perfil entre la posicion actual y el punto de preview.
+
+        Leer el perfil EN el punto de preview era el defecto de fondo. A
+        mitad de curva ese punto ya cae en la salida, donde la pista admite
+        mas velocidad, asi que el objetivo entregado quedaba por encima del
+        limite de agarre local y el controlador aceleraba dentro de la
+        curva. Tomando el minimo del tramo se conserva el frenado
+        anticipado, porque el minimo detecta la curva que viene, y el
+        sobrepaso desaparece por construccion.
+        """
+        steps = max(1, int(round(preview_m / self.path.avg_spacing)))
+        window_idx = (idx + np.arange(0, steps + 1)) % self.path.n
+        return float(np.min(self.v_max[window_idx]))
 
     def target_speed_kmh(self, idx, speed_ms, preview_m=20.0,
-                         preview_speed_gain=0.0, avg_window_m=12.0):
+                         preview_speed_gain=0.35):
         """
         Devuelve UN solo valor objetivo en km/h (no una secuencia): el
-        MPCLongitudinalController que ya validaste toma target_speed
-        escalar, no una secuencia por paso — a diferencia del MPC de
-        dirección, aquí es el propio horizonte interno del controlador el
-        que ya mira hacia adelante con el modelo K/tau; lo que este método
-        aporta es QUÉ velocidad objetivo usar en cada instante, adelantada
-        `preview_m` metros para que el MPC ya esté frenando antes de la
-        curva, no en cuanto la detecta.
+        MPCLongitudinalController toma target_speed escalar, no una
+        secuencia por paso. Aquí es el propio horizonte interno del
+        controlador el que mira hacia adelante con el modelo K/tau. Lo que
+        este método aporta es QUÉ velocidad objetivo usar en cada instante.
+
+        La anticipación crece con la velocidad, `preview_m` más
+        `preview_speed_gain` por cada m/s, porque la distancia de frenado
+        también crece con la velocidad.
         """
         preview_eff = preview_m + preview_speed_gain * max(0.0, speed_ms)
-        v_ref_ms = self.v_ref_at_offset(idx, preview_eff, avg_window_m=avg_window_m)
-        return v_ref_ms * 3.6
+        return self.v_ref_min_ahead(idx, preview_eff) * 3.6
 
 
 # =============================================================================
@@ -667,8 +696,19 @@ class VJoyOutput:
         self.center()
 
     def send_all(self, steer_rad, u_cmd, max_rad=1.2):
-        """u_cmd viene directo del MPC longitudinal: [-1, 1], + gas, - freno."""
-        norm = np.clip(steer_rad / max_rad, -1.0, 1.0)
+        """
+        u_cmd viene directo del MPC longitudinal: [-1, 1], + gas, - freno.
+
+        Devuelve gas, freno, el comando de dirección normalizado que de
+        verdad salió por el eje X, y un indicador de saturación de ese eje.
+        El comando normalizado es la señal que hay que comparar contra
+        `steerAngle` de la memoria compartida para calibrar la cadena
+        completa entre `steering_ratio_n`, `max_rad` y el ángulo real de
+        dirección del vehículo.
+        """
+        ratio = steer_rad / max_rad
+        norm = float(np.clip(ratio, -1.0, 1.0))
+        steer_sat = abs(ratio) > 1.0
         steer_val = max(1, min(32767, int((norm + 1.0) / 2.0 * 32766 + 1)))
 
         if u_cmd >= 0:
@@ -680,7 +720,7 @@ class VJoyOutput:
         self.j.data.wAxisY = gas_val
         self.j.data.wAxisZRot = brake_val
         self.j.update()
-        return gas_val / 32767.0, brake_val / 32767.0
+        return gas_val / 32767.0, brake_val / 32767.0, norm, steer_sat
 
     def center(self):
         self.j.data.wAxisX = 16384
@@ -694,27 +734,37 @@ class VJoyOutput:
 # =============================================================================
 
 # =============================================================================
-# PARÁMETROS EXPUESTOS — paquete conservador anti sobrecorreccion
-# Todo lo que se calibra para quitar el zigzag de direccion y la alternancia
-# gas y freno en curva esta aqui reunido, no disperso por el codigo.
+# PARÁMETROS EXPUESTOS
+# Todo lo que se calibra esta aqui reunido, no disperso por el codigo.
+#
+# Los valores actuales corresponden al bloque A del diagnostico del
+# 2026-09-09, que se apoya en tres medidas hechas sobre monza_fast_lane.csv.
+# Primera, leer el perfil de velocidad EN el punto de preview entregaba al
+# MPC un objetivo por encima del limite fisico local en el 17.7 por ciento
+# del trazado, con un maximo de 122 km/h de exceso, y tomando el minimo del
+# tramo ese exceso baja a cero. Segunda, un ff_gain por debajo de 1 produce
+# un error lateral de regimen permanente que con 0.55 llegaba a 6 m.
+# Tercera, la ventana de suavizado de curvatura de 15 m borraba el 22 por
+# ciento del pico de curvatura de las variantes.
 # =============================================================================
 
 CFG = {
     # --- Perfil de velocidad y trazada ---
     "grip_usage_factor": 0.80,     # margen de agarre. Mas bajo, mas prolijo, menos ritmo
-    "curvature_smooth_m": 15.0,    # ventana de suavizado de curvatura de la trazada
-    "profile_smooth_m": 25.0,      # ventana de suavizado del perfil v_max sobre s
+    "curvature_smooth_m": 5.0,     # ventana de suavizado de curvatura. 15 m borraba el pico de las variantes
+    "profile_smooth_m": 0.0,       # suavizado del perfil v_max. Solo puede bajarlo, nunca subirlo
 
     # --- Objetivo de velocidad que recibe el MPC longitudinal ---
+    # El objetivo es el MINIMO del perfil entre la posicion actual y el
+    # punto de preview, nunca el valor EN el punto de preview.
     "preview_m": 20.0,             # anticipacion base de frenado
     "preview_speed_gain": 0.35,    # anticipacion extra por m/s de velocidad
-    "vref_avg_window_m": 12.0,     # ventana para promediar v_ref y quitar escalones
 
     # --- Referencia de direccion (pure pursuit + feedforward) ---
-    "k_ey": 0.35,                  # peso base del error lateral
-    "k_ey_v_decay": 0.03,          # decaimiento del peso lateral con la velocidad
-    "Ld_speed_gain": 0.8,          # crecimiento del lookahead con la velocidad
-    "ff_gain": 0.55,               # fraccion del feedforward de curvatura
+    "k_ey": 0.50,                  # peso base del error lateral
+    "k_ey_v_decay": 0.0,           # decaimiento del peso lateral con la velocidad. 0 lo anula
+    "Ld_speed_gain": 0.6,          # crecimiento del lookahead con la velocidad
+    "ff_gain": 1.0,                # feedforward de curvatura completo. Por debajo de 1 hay error permanente
 
     # --- MPC de direccion ---
     "steer_Rd": 0.6,               # penalizacion de tasa del par. Mas alto, mando mas suave
@@ -731,6 +781,18 @@ CFG = {
     "throttle_fall_s": 0.35,
     "brake_rise_s": 0.45,
     "brake_fall_s": 0.30,
+
+    # --- Cadena de dirección, PENDIENTE DE CALIBRACIÓN ---
+    # Con steering_ratio_n igual a 16 y theta_clip igual a 1.2 rad, el radio
+    # mas cerrado que el comando puede expresar es 36 m, mientras que la
+    # trazada baja a 19.5 m. El 1.2 por ciento del trazado, que es la
+    # primera variante, queda fuera de alcance aunque el feedforward sea
+    # completo. NO ESTA VERIFICADO que 1.2 rad corresponda al tope real de
+    # direccion del vehiculo en Assetto Corsa. La corrida instrumentada
+    # registra steer_cmd_norm y steer_angle_ac para resolverlo con datos.
+    "steering_ratio_n": 16,
+    "theta_clip_rad": 1.2,
+    "vjoy_max_rad": 1.2,
 }
 
 
@@ -783,11 +845,13 @@ def main(use_ffbeast=False):
     Ts = 0.05
     N_steer = 10
     ref_gen = ReferenceGenerator(
-        wheelbase_L=2.7, steering_ratio_n=16, steer_sign=-1,
+        wheelbase_L=2.7, steering_ratio_n=CFG["steering_ratio_n"], steer_sign=-1,
         k_ey=CFG["k_ey"], k_ey_v_decay=CFG["k_ey_v_decay"],
-        Ld_speed_gain=CFG["Ld_speed_gain"], ff_gain=CFG["ff_gain"])
+        Ld_speed_gain=CFG["Ld_speed_gain"], ff_gain=CFG["ff_gain"],
+        theta_clip=CFG["theta_clip_rad"])
     mpc_steer = MPCSteeringController(Ts=Ts, N=N_steer,
-                                     R=CFG["steer_R"], Rd=CFG["steer_Rd"])
+                                     R=CFG["steer_R"], Rd=CFG["steer_Rd"],
+                                     theta_max=CFG["theta_clip_rad"])
 
     model_params = {
         # Throttle: modelo K/tau identificado con step_test_logger.py +
@@ -820,7 +884,9 @@ def main(use_ffbeast=False):
                         brake_rise_s=CFG["brake_rise_s"],
                         brake_fall_s=CFG["brake_fall_s"])
     print(f"      Dirección: N={N_steer} pasos × {Ts}s = {N_steer*Ts:.2f}s horizonte (τ_dir≈0.2s)")
-    print(f"      Velocidad: N=15 pasos × 0.2s = 3.0s horizonte (τ_throttle≈2.81s) ✓")
+    print(f"      Velocidad: N={mpc_speed.N} pasos × {mpc_speed.ts}s = "
+          f"{mpc_speed.N * mpc_speed.ts:.2f}s horizonte (τ_throttle≈2.81s)")
+    print(f"      Objetivo de velocidad por mínimo sobre ventana de preview ✓")
 
     kf = None
     if use_ffbeast:
@@ -830,9 +896,25 @@ def main(use_ffbeast=False):
     log_name = f"mpc_unificado_{time.strftime('%Y%m%d_%H%M%S')}.csv"
     log_file = open(log_name, 'w', newline='')
     writer = csv.writer(log_file)
-    writer.writerow(['t_s', 'e_y_m', 'theta_ref0_deg', 'theta_real_deg', 'tau_Nm',
-                      'v_real_kmh', 'v_target_kmh', 'u_cmd_raw', 'u_cmd_shaped',
-                      'gas', 'brake', 'loop_dt_ms'])
+    # Las columnas a partir de s_m son la instrumentacion del bloque B.
+    # steer_cmd_norm y steer_angle_ac permiten calibrar la cadena de
+    # direccion. kappa_path, v_real_kmh y accG dan el material para
+    # identificar el gradiente de subviraje. theta_ref_sat_steps y
+    # steer_out_sat dicen si el comando esta chocando contra un tope.
+    writer.writerow(['t_s', 'e_y_m', 'e_psi_rad', 'theta_ref0_deg', 'theta_real_deg', 'tau_Nm',
+                      'v_real_kmh', 'v_target_kmh', 'v_limit_kmh', 'u_cmd_raw', 'u_cmd_shaped',
+                      'gas', 'brake', 'loop_dt_ms',
+                      's_m', 'kappa_path', 'steer_cmd_norm', 'steer_angle_ac',
+                      'theta_ref0_unclipped_deg', 'theta_ref_sat_steps', 'steer_out_sat',
+                      'accG_x', 'accG_y', 'accG_z', 'tyres_out'])
+
+    # Acumuladores del diagnostico, se resumen al cerrar la corrida.
+    diag_cmd = []
+    diag_ac = []
+    n_theta_sat = 0
+    n_steer_sat = 0
+    max_tyres_out = 0
+    max_abs_ey = 0.0
 
     print()
     if use_ffbeast:
@@ -851,8 +933,10 @@ def main(use_ffbeast=False):
     t0 = time.time()
 
     print(f"{'t(s)':>6} | {'e_y(m)':>7} | {'θ(°)':>7} | {'v(km/h)':>8} | "
-          f"{'v_obj(km/h)':>11} | {'gas':>5} | {'brake':>5}")
-    print("-" * 75)
+          f"{'v_obj(km/h)':>11} | {'gas':>5} | {'brake':>5} | flags")
+    print("  SAT = referencia de dirección recortada por el tope")
+    print("  OUT = más de dos ruedas fuera de pista")
+    print("-" * 90)
 
     try:
         while True:
@@ -901,8 +985,8 @@ def main(use_ffbeast=False):
             v_target_kmh = speed_gen.target_speed_kmh(
                 idx, speed_ms,
                 preview_m=CFG["preview_m"],
-                preview_speed_gain=CFG["preview_speed_gain"],
-                avg_window_m=CFG["vref_avg_window_m"])
+                preview_speed_gain=CFG["preview_speed_gain"])
+            v_limit_kmh = float(speed_gen.v_limit[idx]) * 3.6
             t_speed0 = time.time()
             u_cmd = mpc_speed.compute_control(speed_kmh, v_target_kmh)
             t_speed_ms = (time.time() - t_speed0) * 1000.0
@@ -919,24 +1003,50 @@ def main(use_ffbeast=False):
             mpc_speed.u_prev = u_cmd_shaped
 
             # --- Salida conjunta ---
-            gas, brake = vjoy.send_all(theta_new, u_cmd_shaped)
+            gas, brake, steer_cmd_norm, steer_out_sat = vjoy.send_all(
+                theta_new, u_cmd_shaped, max_rad=CFG["vjoy_max_rad"])
+
+            # --- Instrumentacion (bloque B) ---
+            steer_angle_ac = float(ph.steerAngle)
+            acc_x, acc_y, acc_z = ph.accG
+            tyres_out = int(ph.numberOfTyresOut)
+            diag_cmd.append(steer_cmd_norm)
+            diag_ac.append(steer_angle_ac)
+            if ref_gen.last_sat_steps > 0:
+                n_theta_sat += 1
+            if steer_out_sat:
+                n_steer_sat += 1
+            if tyres_out > max_tyres_out:
+                max_tyres_out = tyres_out
+            if abs(e_y) > max_abs_ey:
+                max_abs_ey = abs(e_y)
 
             cycle += 1
             t_elapsed = time.time() - t0
             loop_dt_ms = (time.time() - t_loop) * 1000.0
 
             if cycle % 10 == 0:
+                flags = ("SAT" if ref_gen.last_sat_steps > 0 else "   ")
+                flags += (" OUT" if tyres_out > 2 else "    ")
                 print(f"{t_elapsed:>6.1f} | {e_y:>7.2f} | {math.degrees(theta_new):>7.1f} | "
                       f"{speed_kmh:>8.1f} | {v_target_kmh:>11.1f} | {gas:>5.2f} | {brake:>5.2f} | "
-                      f"solve: dir={t_steer_ms:.1f}ms vel={t_speed_ms:.1f}ms tot_loop={loop_dt_ms:.1f}ms")
+                      f"{flags} | solve: dir={t_steer_ms:.1f}ms vel={t_speed_ms:.1f}ms "
+                      f"tot_loop={loop_dt_ms:.1f}ms")
 
-            writer.writerow([round(t_elapsed, 3), round(e_y, 4),
+            writer.writerow([round(t_elapsed, 3), round(e_y, 4), round(e_psi, 4),
                               round(math.degrees(theta_ref_seq[0]), 3),
                               round(math.degrees(theta_new), 3), round(tau, 4),
                               round(speed_kmh, 2), round(v_target_kmh, 2),
+                              round(v_limit_kmh, 2),
                               round(u_cmd, 3), round(u_cmd_shaped, 3),
                               round(gas, 3), round(brake, 3),
-                              round(loop_dt_ms, 2)])
+                              round(loop_dt_ms, 2),
+                              round(float(s), 2), round(float(path.curvature[idx]), 6),
+                              round(steer_cmd_norm, 5), round(steer_angle_ac, 5),
+                              round(math.degrees(ref_gen.last_theta0_unclipped), 3),
+                              ref_gen.last_sat_steps, int(steer_out_sat),
+                              round(float(acc_x), 4), round(float(acc_y), 4),
+                              round(float(acc_z), 4), tyres_out])
             if cycle % 20 == 0:
                 log_file.flush()
 
@@ -956,6 +1066,56 @@ def main(use_ffbeast=False):
         sm.close()
         print(f"Log guardado: {log_name}")
         print(f"Ciclos ejecutados: {cycle}")
+        _resumen_diagnostico(cycle, diag_cmd, diag_ac, n_theta_sat, n_steer_sat,
+                             max_tyres_out, max_abs_ey)
+
+
+def _resumen_diagnostico(cycle, diag_cmd, diag_ac, n_theta_sat, n_steer_sat,
+                          max_tyres_out, max_abs_ey):
+    """
+    Resumen del bloque B al cerrar la corrida.
+
+    El ajuste por minimos cuadrados entre el comando normalizado y
+    `steerAngle` de la memoria compartida da la constante que falta para
+    saber si `steering_ratio_n` y el recorte de 1.2 rad dejan al comando sin
+    autoridad suficiente en las curvas mas cerradas. Las unidades de
+    `steerAngle` en Assetto Corsa NO ESTAN VERIFICADAS, asi que aqui solo se
+    reporta el rango observado y la pendiente. La interpretacion queda para
+    el analisis posterior del log.
+    """
+    if cycle == 0:
+        return
+    print()
+    print("=" * 60)
+    print("  RESUMEN DE DIAGNÓSTICO (bloque B)")
+    print("=" * 60)
+    print(f"  Error lateral máximo          : {max_abs_ey:.2f} m")
+    print(f"  Ruedas fuera de pista (máximo): {max_tyres_out}")
+    print(f"  Ciclos con theta_ref recortada: {n_theta_sat} "
+          f"({100.0 * n_theta_sat / cycle:.1f} %)")
+    print(f"  Ciclos con eje de vJoy al tope: {n_steer_sat} "
+          f"({100.0 * n_steer_sat / cycle:.1f} %)")
+
+    cmd = np.asarray(diag_cmd, dtype=float)
+    ac = np.asarray(diag_ac, dtype=float)
+    if cmd.size >= 20:
+        print(f"  Comando normalizado, rango    : [{cmd.min():+.3f}, {cmd.max():+.3f}]")
+        print(f"  steerAngle de AC, rango       : [{ac.min():+.3f}, {ac.max():+.3f}]")
+        var = float(np.dot(cmd, cmd))
+        if var > 1e-9:
+            slope = float(np.dot(cmd, ac) / var)
+            resid = ac - slope * cmd
+            ss_tot = float(np.sum((ac - ac.mean()) ** 2))
+            r2 = 1.0 - float(np.sum(resid ** 2)) / ss_tot if ss_tot > 1e-9 else float('nan')
+            print(f"  Ajuste steerAngle = k · comando: k = {slope:.4f}, R² = {r2:.4f}")
+            print("  Unidades de steerAngle NO VERIFICADAS. Interpretar el ajuste")
+            print("  contra el tope de dirección real del vehículo antes de")
+            print("  cambiar steering_ratio_n o theta_clip_rad.")
+    if n_theta_sat > 0:
+        print()
+        print("  AVISO: la referencia de dirección tocó su tope. En las curvas")
+        print("  donde ocurre, el comando no puede pedir el radio que la trazada")
+        print("  exige, y eso no se corrige calibrando ganancias.")
 
 
 if __name__ == "__main__":
