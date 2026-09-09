@@ -116,10 +116,17 @@ class SPageFileStaticHead(ctypes.Structure):
     porque no hace falta y declararla de memoria sería inventar el
     esquema. Aun así el contenido se valida antes de usarlo, y si no
     resulta legible se registra como no disponible.
+
+    Corrección verificada el 2026-09-09 contra una corrida real. La versión
+    anterior declaraba un campo packetId al principio y devolvía las tres
+    cadenas desplazadas exactamente cuatro bytes, es decir dos caracteres
+    menos en cada una. Se leía fa_romeo_giulietta_qv en lugar de
+    alfa_romeo_giulietta_qv, nza en lugar de monza y 16.4 en lugar de
+    1.16.4. El desfase aparecía ya en acVersion, lo que sitúa el error
+    antes de ese campo. Esta página no lleva packetId.
     """
     _pack_ = 4
     _fields_ = [
-        ("packetId", ctypes.c_int32),
         ("smVersion", ctypes.c_wchar * 15),
         ("acVersion", ctypes.c_wchar * 15),
         ("numberOfSessions", ctypes.c_int32),
@@ -337,11 +344,31 @@ class ReferenceGenerator:
 class SpeedProfileGenerator:
     def __init__(self, path: ReferencePath,
                  ay_max_ms2=6.5, ax_brake_max_ms2=10.25,
-                 grip_usage_factor=0.5, v_max_recta_ms=50,
+                 grip_usage_factor=0.5, grip_usage_brake=None,
+                 v_max_recta_ms=50,
                  n_backward_passes=5, profile_smooth_m=25.0):
+        """
+        grip_usage_brake se separa de grip_usage_factor a propósito.
+
+        El paso hacia atrás que fija dónde empieza a frenar el vehículo debe
+        usar la deceleración que el LAZO CERRADO consigue de verdad, no la de
+        pico. Medido sobre la corrida del 2026-09-09, con el freno a fondo la
+        deceleración instantánea es de 8.43 m/s² de mediana, muy cerca de los
+        8.20 que suponía el perfil, pero el lazo cerrado solo llega a freno
+        pleno en el 8 por ciento de los ciclos. Promediada por fase de
+        frenado completa, incluyendo la rampa del pedal, la deceleración
+        efectiva baja a 7.27 m/s² de mediana con percentil 25 en 6.23. El
+        perfil planificaba con la capacidad de pico y por eso el vehículo
+        llegaba a las curvas 16.9 km/h por encima del objetivo en mediana.
+
+        Si se deja en None se usa grip_usage_factor, que es el
+        comportamiento anterior.
+        """
         self.path = path
+        if grip_usage_brake is None:
+            grip_usage_brake = grip_usage_factor
         self.ay_max = ay_max_ms2 * grip_usage_factor
-        self.ax_brake_max = ax_brake_max_ms2 * grip_usage_factor
+        self.ax_brake_max = ax_brake_max_ms2 * grip_usage_brake
         self.v_cap = v_max_recta_ms
         self.profile_smooth_m = profile_smooth_m
 
@@ -964,6 +991,79 @@ class RunRecorder:
                                           round(float(cmd.max()), 4)]
             s["steer_angle_ac_rango"] = [round(float(ac.min()), 4),
                                           round(float(ac.max()), 4)]
+
+        # --- Identificación automática de la cadena de dirección ---
+        # Reidentifica en cada corrida los radianes de rueda por unidad de
+        # steerAngle, y con ellos la ganancia total de la cadena. Sirve para
+        # detectar solo, sin análisis externo, que la calibración dejó de
+        # valer porque cambió la configuración del mando, el vehículo o el
+        # bloqueo de dirección.
+        #
+        # Se usa la relación cinemática delta = L * yaw / v, restringida a
+        # baja velocidad y con las cuatro ruedas en pista, que es donde el
+        # deslizamiento del neumático es pequeño y la relación se cumple.
+        try:
+            yaw = num("yaw_rate_rad_s")
+            vk = num("v_real_kmh")
+            fuera = num("tyres_out")
+            ey_all = num("e_y_m")
+            L_ = float(self.cfg.get("wheelbase_L", 2.7))
+            m = ((fuera == 0) & (np.abs(ey_all) < 2.0) & (vk > 20) & (vk < 50)
+                 & (np.abs(yaw) > 0.03) & (np.abs(ac) > 0.02))
+            if int(m.sum()) >= 40:
+                d_kin = L_ * yaw[m] / (vk[m] / 3.6)
+                base = float(np.dot(ac[m], ac[m]))
+                k_rueda = float(np.dot(ac[m], d_kin) / base)
+                resid = d_kin - k_rueda * ac[m]
+                var = float(np.sum((d_kin - np.mean(d_kin)) ** 2))
+                s["cal_muestras"] = int(m.sum())
+                s["cal_rad_rueda_por_steerAngle"] = round(k_rueda, 4)
+                s["cal_r2"] = round(1.0 - float(np.sum(resid ** 2)) / var, 4) \
+                    if var > 1e-12 else None
+                if "steer_ac_por_comando_pendiente" in s:
+                    tope = abs(s["steer_ac_por_comando_pendiente"]) * k_rueda
+                    s["cal_rad_rueda_eje_completo"] = round(tope, 4)
+                    s["cal_grados_rueda_eje_completo"] = round(math.degrees(tope), 2)
+                    n_der = float(self.cfg.get("steering_ratio_n_derivada", 0.0))
+                    vmax = float(self.cfg.get("vjoy_max_rad", 1.2))
+                    if n_der > 0 and vmax > 0:
+                        ganancia = (n_der / vmax) * \
+                            abs(s["steer_ac_por_comando_pendiente"]) * k_rueda
+                        s["cal_ganancia_cadena"] = round(ganancia, 3)
+                        s["cal_ganancia_objetivo"] = 1.0
+                    esperado = float(self.cfg.get("rueda_rad_eje_completo", 0.0))
+                    if esperado > 0:
+                        desv = 100.0 * (tope - esperado) / esperado
+                        s["cal_desviacion_vs_configurado_pct"] = round(desv, 1)
+                        if abs(desv) > 15.0:
+                            s["cal_aviso"] = (
+                                "la calibracion medida se aleja mas de un 15 por ciento "
+                                "del valor configurado en rueda_rad_eje_completo, "
+                                "actualizarlo antes de interpretar el resto")
+            else:
+                s["cal_muestras"] = int(m.sum())
+                s["cal_aviso"] = ("muestras insuficientes a baja velocidad para "
+                                  "reidentificar la cadena de direccion")
+        except Exception as e:
+            s["cal_aviso"] = f"no se pudo reidentificar la cadena: {e}"
+
+        # Ángulo de deriva. Entre `heading` de Assetto Corsa y la dirección
+        # del vector velocidad hay un desfase de convención cercano a 90
+        # grados, así que la columna cruda no es la deriva. Se estima el
+        # desfase con la mediana a velocidad alta y se informa la deriva ya
+        # corregida, dejando la columna del registro sin tocar.
+        try:
+            v_alto = v_real > 60
+            if int(v_alto.sum()) >= 50:
+                offset = float(np.median(sside[v_alto]))
+                corr = (sside - offset + np.pi) % (2 * np.pi) - np.pi
+                s["sideslip_offset_convencion_deg"] = round(np.degrees(offset), 2)
+                s["sideslip_real_p50_deg"] = round(
+                    float(np.degrees(np.median(np.abs(corr[v_alto])))), 2)
+                s["sideslip_real_p95_deg"] = round(
+                    float(np.degrees(np.percentile(np.abs(corr[v_alto]), 95))), 2)
+        except Exception:
+            pass
         return s
 
     def finalize(self, path, speed_gen, static_info=None, extra=None):
@@ -1035,10 +1135,10 @@ class VJoyOutput:
 
         Devuelve gas, freno, el comando de dirección normalizado que de
         verdad salió por el eje X, y un indicador de saturación de ese eje.
-        El comando normalizado es la señal que hay que comparar contra
-        `steerAngle` de la memoria compartida para calibrar la cadena
-        completa entre `steering_ratio_n`, `max_rad` y el ángulo real de
-        dirección del vehículo.
+        El comando normalizado es la señal que se compara contra
+        `steerAngle` de la memoria compartida para reidentificar en cada
+        corrida la constante `rueda_rad_eje_completo`, de la que sale la
+        relación interna que mantiene la ganancia de la cadena en uno.
         """
         ratio = steer_rad / max_rad
         norm = float(np.clip(ratio, -1.0, 1.0))
@@ -1084,7 +1184,10 @@ class VJoyOutput:
 
 CFG = {
     # --- Perfil de velocidad y trazada ---
-    "grip_usage_factor": 0.80,     # margen de agarre. Mas bajo, mas prolijo, menos ritmo
+    "grip_usage_factor": 0.80,     # margen de agarre LATERAL
+    "grip_usage_brake": 0.60,      # margen de frenado del paso hacia atras. 0.60 sale del
+                                   # percentil 25 de la deceleracion que el lazo cerrado
+                                   # consigue de verdad, 6.23 m/s2, medida el 2026-09-09
     "curvature_smooth_m": 5.0,     # ventana de suavizado de curvatura. 15 m borraba el pico de las variantes
     "profile_smooth_m": 0.0,       # suavizado del perfil v_max. Solo puede bajarlo, nunca subirlo
 
@@ -1116,15 +1219,27 @@ CFG = {
     "brake_rise_s": 0.45,
     "brake_fall_s": 0.30,
 
-    # --- Cadena de dirección, PENDIENTE DE CALIBRACIÓN ---
-    # Con steering_ratio_n igual a 16 y theta_clip igual a 1.2 rad, el radio
-    # mas cerrado que el comando puede expresar es 36 m, mientras que la
-    # trazada baja a 19.5 m. El 1.2 por ciento del trazado, que es la
-    # primera variante, queda fuera de alcance aunque el feedforward sea
-    # completo. NO ESTA VERIFICADO que 1.2 rad corresponda al tope real de
-    # direccion del vehiculo en Assetto Corsa. La corrida instrumentada
-    # registra steer_cmd_norm y steer_angle_ac para resolverlo con datos.
-    "steering_ratio_n": 16,
+    # --- Cadena de dirección, CALIBRADA ---
+    # Una sola constante medida sustituye al par steering_ratio_n y
+    # vjoy_max_rad que antes se fijaban por separado y sin verificar.
+    #
+    # rueda_rad_eje_completo son los radianes de rueda directriz que el
+    # vehículo toma de verdad cuando el eje de vJoy va a su extremo.
+    # Identificado sobre la corrida del 2026-09-09 por dos vías
+    # independientes que concuerdan. La velocidad de guiñada da
+    # rueda = 0.468 por steerAngle con R² de 0.955, y el ajuste de una
+    # circunferencia a tres posiciones de la trayectoria separadas cuatro
+    # metros da 0.446 con R² de 0.927. Con el eje a fondo steerAngle llega a
+    # 0.355, luego el tope es 0.355 por 0.4569 igual a 0.1622 rad.
+    #
+    # Con el par anterior la cadena multiplicaba por 2.15 el ángulo pedido.
+    # Ese exceso de ganancia es lo que mantenía el lazo oscilando, y
+    # explica por qué ajustar k_ey y ff_gain nunca convergía.
+    #
+    # HAY QUE VOLVER A MEDIRLA si cambia la configuración del mando en
+    # Assetto Corsa, el vehículo o el bloqueo de dirección. El resumen de
+    # cada corrida vuelve a identificarla y avisa si se aleja de este valor.
+    "rueda_rad_eje_completo": 0.1622,
     "theta_clip_rad": 1.2,
     "vjoy_max_rad": 1.2,
 }
@@ -1144,8 +1259,11 @@ def main(use_ffbeast=False):
     speed_gen = SpeedProfileGenerator(
         path, ay_max_ms2=6.5, ax_brake_max_ms2=10.25,
         grip_usage_factor=CFG["grip_usage_factor"],
+        grip_usage_brake=CFG["grip_usage_brake"],
         profile_smooth_m=CFG["profile_smooth_m"])
     print(f"      v_max: {speed_gen.v_max.min()*3.6:.0f}–{speed_gen.v_max.max()*3.6:.0f} km/h ✓")
+    print(f"      ay_max={speed_gen.ay_max:.2f} m/s²  "
+          f"ax_frenado={speed_gen.ax_brake_max:.2f} m/s² (lazo cerrado, no de pico)")
 
     print("[3/6] Conectando a AC (shared memory)...")
     try:
@@ -1178,8 +1296,19 @@ def main(use_ffbeast=False):
     print("[6/6] Inicializando ambos MPC...")
     Ts = 0.05
     N_steer = 10
+    # La relación interna sale de la constante medida, no se fija a mano.
+    # Con esto el ángulo de rueda que el vehículo toma coincide con el que
+    # el controlador pide, y la ganancia de la cadena vale uno.
+    steering_ratio_n = CFG["vjoy_max_rad"] / CFG["rueda_rad_eje_completo"]
+    print(f"      Cadena de dirección: {CFG['rueda_rad_eje_completo']:.4f} rad de rueda "
+          f"con el eje a fondo")
+    print(f"      steering_ratio_n derivada = {steering_ratio_n:.3f}  "
+          f"(antes 16, ganancia de cadena 2.15)")
+    print(f"      tope de rueda alcanzable = "
+          f"{math.degrees(CFG['rueda_rad_eje_completo']):.1f}°")
+
     ref_gen = ReferenceGenerator(
-        wheelbase_L=2.7, steering_ratio_n=CFG["steering_ratio_n"], steer_sign=-1,
+        wheelbase_L=2.7, steering_ratio_n=steering_ratio_n, steer_sign=-1,
         k_ey=CFG["k_ey"], k_ey_v_decay=CFG["k_ey_v_decay"],
         Ld_speed_gain=CFG["Ld_speed_gain"], ff_gain=CFG["ff_gain"],
         theta_clip=CFG["theta_clip_rad"])
@@ -1231,6 +1360,7 @@ def main(use_ffbeast=False):
     cfg_corrida = dict(CFG)
     cfg_corrida.update({
         "Ts_s": Ts, "Ts_ms": Ts * 1000.0, "N_steer": N_steer,
+        "steering_ratio_n_derivada": steering_ratio_n,
         "wheelbase_L": 2.7, "steer_sign": -1,
         "long_horizon": mpc_speed.N, "long_ts": mpc_speed.ts,
         "modelo_longitudinal": model_params,
