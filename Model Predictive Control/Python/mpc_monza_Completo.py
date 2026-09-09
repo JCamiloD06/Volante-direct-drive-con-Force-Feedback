@@ -22,9 +22,17 @@ import mmap
 import math
 import time
 import csv
+import os
+import sys
+import json
+import hashlib
+import platform
 import numpy as np
+import scipy
 from scipy.optimize import minimize
 import pyvjoy
+
+scipy_version = scipy.__version__
 
 try:
     import sdl2
@@ -99,10 +107,36 @@ class SPageFileGraphic(ctypes.Structure):
         ("carCoordinates", ctypes.c_float * 3),
     ]
 
+class SPageFileStaticHead(ctypes.Structure):
+    """
+    Solo el ENCABEZADO de la página estática, hasta el nombre de la pista.
+
+    Se lee únicamente para dejar en el manifiesto de la corrida qué coche y
+    qué pista se usaron. El resto de la página no se declara a propósito,
+    porque no hace falta y declararla de memoria sería inventar el
+    esquema. Aun así el contenido se valida antes de usarlo, y si no
+    resulta legible se registra como no disponible.
+    """
+    _pack_ = 4
+    _fields_ = [
+        ("packetId", ctypes.c_int32),
+        ("smVersion", ctypes.c_wchar * 15),
+        ("acVersion", ctypes.c_wchar * 15),
+        ("numberOfSessions", ctypes.c_int32),
+        ("numCars", ctypes.c_int32),
+        ("carModel", ctypes.c_wchar * 33),
+        ("track", ctypes.c_wchar * 33),
+    ]
+
+
 class ACSharedMemory:
     def __init__(self):
         self._ph_mmap = mmap.mmap(-1, ctypes.sizeof(SPageFilePhysics), "acpmf_physics")
         self._gr_mmap = mmap.mmap(-1, ctypes.sizeof(SPageFileGraphic), "acpmf_graphics")
+        try:
+            self._st_mmap = mmap.mmap(-1, ctypes.sizeof(SPageFileStaticHead), "acpmf_static")
+        except Exception:
+            self._st_mmap = None
 
     def read_physics(self) -> SPageFilePhysics:
         return SPageFilePhysics.from_buffer_copy(self._ph_mmap)
@@ -110,9 +144,35 @@ class ACSharedMemory:
     def read_graphics(self) -> SPageFileGraphic:
         return SPageFileGraphic.from_buffer_copy(self._gr_mmap)
 
+    def read_static_info(self) -> dict:
+        """Devuelve coche, pista y versión, o None en cada campo ilegible."""
+        info = {"carModel": None, "track": None, "acVersion": None,
+                "lectura": "no disponible"}
+        if self._st_mmap is None:
+            return info
+
+        def limpio(valor):
+            texto = str(valor).split("\x00")[0].strip()
+            if not texto or not all(32 <= ord(c) < 127 for c in texto):
+                return None
+            return texto
+
+        try:
+            st = SPageFileStaticHead.from_buffer_copy(self._st_mmap)
+            info["carModel"] = limpio(st.carModel)
+            info["track"] = limpio(st.track)
+            info["acVersion"] = limpio(st.acVersion)
+            leidos = sum(1 for k in ("carModel", "track", "acVersion") if info[k])
+            info["lectura"] = "ok" if leidos == 3 else f"parcial ({leidos} de 3)"
+        except Exception as e:
+            info["lectura"] = f"error: {e}"
+        return info
+
     def close(self):
         self._ph_mmap.close()
         self._gr_mmap.close()
+        if self._st_mmap is not None:
+            self._st_mmap.close()
 
 
 # =============================================================================
@@ -223,11 +283,20 @@ class ReferenceGenerator:
         self.Ld_speed_gain = Ld_speed_gain
         self.ff_gain = ff_gain
         self.theta_clip = theta_clip
-        # Instrumentacion: cuantos pasos del horizonte quedaron recortados
-        # por theta_clip en la ultima llamada, y cual habria sido el valor
-        # sin recortar en el primer paso.
+        # Instrumentacion. Desglose de la ultima referencia generada, para
+        # poder separar en el analisis cuanto de la orden de direccion viene
+        # de la realimentacion y cuanto del feedforward de curvatura. Sin
+        # esta separacion no se distingue una oscilacion del lazo cerrado de
+        # un temblor inducido por el ruido de curvatura de la trazada.
         self.last_sat_steps = 0
         self.last_theta0_unclipped = 0.0
+        self.last_Ld = 0.0
+        self.last_k_ey_eff = 0.0
+        self.last_alpha0 = 0.0
+        self.last_delta_pp0 = 0.0
+        self.last_delta_ff0 = 0.0
+        self.last_kappa0 = 0.0
+        self.last_theta_ref_last = 0.0
 
     def generate(self, e_y, e_psi, path: ReferencePath, idx, speed_ms, N, Ts):
         Ld = max(5.0, self.Ld_base + self.Ld_speed_gain * speed_ms)
@@ -246,10 +315,18 @@ class ReferenceGenerator:
             theta_unclipped = delta_total * self.n
             if k == 0:
                 self.last_theta0_unclipped = float(theta_unclipped)
+                self.last_kappa0 = float(kappa_k)
+                self.last_delta_ff0 = float(self.ff_gain * delta_ff)
             if abs(theta_unclipped) > self.theta_clip:
                 sat_steps += 1
             theta_ref[k] = np.clip(theta_unclipped, -self.theta_clip, self.theta_clip)
+
         self.last_sat_steps = sat_steps
+        self.last_Ld = float(Ld)
+        self.last_k_ey_eff = float(k_ey_eff)
+        self.last_alpha0 = float(alpha0)
+        self.last_delta_pp0 = float(delta_pp0)
+        self.last_theta_ref_last = float(theta_ref[-1])
         return theta_ref
 
 
@@ -354,6 +431,14 @@ class MPCSteeringController:
         self.B = np.array([0.0, Ts / J])
         self.u_prev = 0.0
         self._u_warm = np.zeros(N)
+        # Instrumentacion del optimizador. Cuando SLSQP no converge, solve
+        # reutiliza el warm start anterior y el comando aplicado deja de ser
+        # el optimo. Si eso ocurre de forma intermitente produce por si solo
+        # un mando irregular, asi que hay que poder descartarlo con datos.
+        self.last_ok = True
+        self.last_nit = 0
+        self.last_cost = 0.0
+        self.last_status = 0
 
     def _predict(self, x0, u_seq):
         xs = np.zeros((self.N + 1, 2))
@@ -394,6 +479,10 @@ class MPCSteeringController:
         res = minimize(self._cost, self._u_warm, args=(x0, theta_ref_seq, self.u_prev),
                         method="SLSQP", bounds=bounds, constraints=constraints,
                         options={"maxiter": 40, "ftol": 1e-6})
+        self.last_ok = bool(res.success)
+        self.last_nit = int(getattr(res, "nit", -1))
+        self.last_status = int(getattr(res, "status", -1))
+        self.last_cost = float(res.fun) if np.isfinite(res.fun) else float("nan")
         u_opt = res.x if res.success else self._u_warm
         tau_apply = float(np.clip(u_opt[0], -self.tau_max, self.tau_max))
         self._u_warm = np.concatenate([u_opt[1:], [u_opt[-1]]])
@@ -464,6 +553,9 @@ class MPCLongitudinalController:
         self.R_rate = 2.0
         self.u_prev = 0.0
         self._u_warm = np.zeros(horizon)
+        self.last_ok = True
+        self.last_nit = 0
+        self.last_cost = 0.0
 
     def predict_velocity(self, v0, u_sequence):
         v_pred = np.zeros(self.N + 1)
@@ -493,6 +585,9 @@ class MPCLongitudinalController:
         res = minimize(self.cost_function, self._u_warm, args=(current_speed_kmh, v_ref),
                         method='L-BFGS-B', bounds=bounds,
                         options={'maxiter': 30, 'ftol': 1e-2})
+        self.last_ok = bool(res.success)
+        self.last_nit = int(getattr(res, "nit", -1))
+        self.last_cost = float(res.fun) if np.isfinite(res.fun) else float("nan")
         u_seq = res.x if res.success else np.full(self.N, -0.3)
         u_optimal = float(np.clip(u_seq[0], -1.0, 1.0))
         self._u_warm = np.concatenate([u_seq[1:], [u_seq[-1]]])
@@ -684,6 +779,245 @@ class PedalShaper:
 
     def reset(self):
         self.u = 0.0
+
+
+# =============================================================================
+# SECCIÓN 5C — RECOLECCIÓN DE DATOS DE LA CORRIDA
+# =============================================================================
+
+TELEMETRY_COLUMNS = [
+    # --- Tiempo y salud del bucle ---
+    "cycle", "t_s", "period_ms", "work_ms", "solve_steer_ms", "solve_speed_ms",
+    "packet_id", "packets_repetidos",
+    # --- Posición y localización sobre la trazada ---
+    "car_x", "car_y", "car_z", "idx", "s_m", "path_x", "path_z",
+    "e_y_m", "e_psi_rad", "kappa_path", "kappa_preview",
+    # --- Orientación. course es lo que usa el controlador, heading_ac es el
+    #     giro real del vehículo. Su diferencia es el ángulo de deriva. ---
+    "heading_course_rad", "heading_ac_rad", "sideslip_rad", "yaw_rate_rad_s",
+    # --- Velocidad ---
+    "v_real_kmh", "v_target_kmh", "v_limit_kmh", "v_from_vector_kmh",
+    # --- Desglose de la referencia de dirección ---
+    "Ld_m", "k_ey_eff", "alpha0_rad", "delta_pp0_rad", "delta_ff0_rad",
+    "theta_ref0_deg", "theta_ref_last_deg", "theta_ref0_unclipped_deg",
+    "theta_ref_sat_steps",
+    # --- Estado y mando de la dirección ---
+    "theta_meas_deg", "theta_dot_meas_dps", "tau_Nm", "theta_new_deg",
+    "steer_cmd_norm", "steer_out_sat", "steer_angle_ac",
+    "mpc_steer_ok", "mpc_steer_nit", "mpc_steer_cost",
+    # --- Mando longitudinal ---
+    "u_cmd_raw", "u_cmd_deadband", "u_cmd_shaped", "gas_cmd", "brake_cmd",
+    "mpc_speed_ok", "mpc_speed_nit", "mpc_speed_cost",
+    # --- Lo que Assetto Corsa dice haber recibido y el estado del vehículo ---
+    "gas_ac", "brake_ac", "gear", "rpms",
+    "accG_x", "accG_y", "accG_z",
+    "slip_fl", "slip_fr", "slip_rl", "slip_rr",
+    "load_fl", "load_fr", "load_rl", "load_rr",
+    "tyres_out", "lap", "is_in_pit",
+]
+
+
+class RunRecorder:
+    """
+    Recolecta la corrida completa en memoria y la escribe al terminar.
+
+    Se acumula en RAM en vez de escribir cada ciclo porque el periodo de
+    control es justamente una de las cosas bajo sospecha, y no conviene
+    meter entrada y salida a disco dentro del lazo. El volcado ocurre en el
+    bloque finally del bucle, así que también se guarda si la corrida
+    termina con Ctrl+C o con una excepción.
+
+    El resultado es una carpeta por corrida con cuatro archivos.
+      telemetry.csv        una fila por ciclo, columnas de TELEMETRY_COLUMNS
+      reference_profile.csv la trazada y el perfil de velocidad usados
+      manifest.json        configuración, versiones, huellas y resumen
+      summary.txt          el mismo resumen en texto legible
+    """
+
+    def __init__(self, base_dir, cfg, controller_file, track_file):
+        self.t_start_wall = time.time()
+        stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(self.t_start_wall))
+        self.dir = os.path.join(base_dir, f"run_{stamp}")
+        os.makedirs(self.dir, exist_ok=True)
+        self.rows = []
+        self.cfg = dict(cfg)
+        self.controller_file = controller_file
+        self.track_file = track_file
+        self.static_info = {}
+        self.notes = []
+
+    def add(self, row):
+        self.rows.append(row)
+
+    @staticmethod
+    def _sha256(path):
+        try:
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+        except Exception:
+            return None
+
+    def _write_telemetry(self):
+        p = os.path.join(self.dir, "telemetry.csv")
+        with open(p, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(TELEMETRY_COLUMNS)
+            w.writerows(self.rows)
+        return p
+
+    def _write_reference(self, path, speed_gen):
+        p = os.path.join(self.dir, "reference_profile.csv")
+        with open(p, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["idx", "s_m", "x", "z", "heading_rad",
+                        "curvature_raw", "curvature_smooth",
+                        "v_limit_kmh", "v_max_kmh"])
+            for i in range(path.n):
+                w.writerow([i, round(float(path.s[i]), 3),
+                            round(float(path.x[i]), 4), round(float(path.z[i]), 4),
+                            round(float(path.heading[i]), 6),
+                            round(float(path.curvature_raw[i]), 8),
+                            round(float(path.curvature[i]), 8),
+                            round(float(speed_gen.v_limit[i]) * 3.6, 3),
+                            round(float(speed_gen.v_max[i]) * 3.6, 3)])
+        return p
+
+    def _stats(self):
+        """Resumen numérico. Devuelve un diccionario, no imprime nada."""
+        if not self.rows:
+            return {"ciclos": 0}
+        col = {name: i for i, name in enumerate(TELEMETRY_COLUMNS)}
+
+        def num(name):
+            v = np.array([r[col[name]] for r in self.rows], dtype=float)
+            return v[np.isfinite(v)]
+
+        e_y = num("e_y_m")
+        period = num("period_ms")
+        theta = num("theta_new_deg")
+        cmd = num("steer_cmd_norm")
+        ac = num("steer_angle_ac")
+        v_real = num("v_real_kmh")
+        v_lim = num("v_limit_kmh")
+        sat = num("theta_ref_sat_steps")
+        tyres = num("tyres_out")
+        sside = num("sideslip_rad")
+
+        s = {
+            "ciclos": len(self.rows),
+            "duracion_s": round(float(num("t_s")[-1]), 2),
+            "e_y_abs_medio_m": round(float(np.mean(np.abs(e_y))), 3),
+            "e_y_abs_p95_m": round(float(np.percentile(np.abs(e_y), 95)), 3),
+            "e_y_abs_max_m": round(float(np.max(np.abs(e_y))), 3),
+            "periodo_medio_ms": round(float(np.mean(period)), 2),
+            "periodo_p95_ms": round(float(np.percentile(period, 95)), 2),
+            "periodo_max_ms": round(float(np.max(period)), 2),
+            "ciclos_sobre_periodo_pct": round(
+                100.0 * float(np.mean(period > 1.5 * self.cfg.get("Ts_ms", 50.0))), 2),
+            "ciclos_mpc_dir_fallo_pct": round(
+                100.0 * float(np.mean(num("mpc_steer_ok") < 0.5)), 2),
+            "ciclos_mpc_vel_fallo_pct": round(
+                100.0 * float(np.mean(num("mpc_speed_ok") < 0.5)), 2),
+            "ciclos_theta_ref_recortada_pct": round(100.0 * float(np.mean(sat > 0)), 2),
+            "ciclos_eje_vjoy_al_tope_pct": round(
+                100.0 * float(np.mean(num("steer_out_sat") > 0.5)), 2),
+            "ruedas_fuera_max": int(np.max(tyres)) if tyres.size else 0,
+            "ciclos_con_ruedas_fuera_pct": round(100.0 * float(np.mean(tyres > 2)), 2),
+            "v_real_max_kmh": round(float(np.max(v_real)), 1),
+            "sobrepaso_v_sobre_limite_max_kmh": round(float(np.max(v_real - v_lim)), 1),
+            "sideslip_abs_max_deg": round(float(np.degrees(np.max(np.abs(sside)))), 2),
+        }
+
+        # Frecuencia dominante del ángulo de dirección. Identifica si el
+        # zigzag es un ciclo límite y a qué ritmo ocurre.
+        dt = float(np.mean(period)) / 1000.0
+        if theta.size > 64 and dt > 1e-4:
+            señal = theta - float(np.mean(theta))
+            ventana = np.hanning(señal.size)
+            esp = np.abs(np.fft.rfft(señal * ventana))
+            frec = np.fft.rfftfreq(señal.size, d=dt)
+            valido = frec > 0.15
+            if np.any(valido):
+                k = int(np.argmax(esp[valido]))
+                s["frecuencia_dominante_direccion_hz"] = round(
+                    float(frec[valido][k]), 3)
+        # Cruces por cero de la derivada del ángulo, medida directa del
+        # numero de correcciones de volante por segundo.
+        if theta.size > 8:
+            d = np.diff(theta)
+            cruces = int(np.sum(np.diff(np.sign(d)) != 0))
+            s["inversiones_volante_por_s"] = round(
+                cruces / max(s["duracion_s"], 1e-3), 2)
+
+        # Ajuste entre el comando enviado y el ángulo informado por AC.
+        if cmd.size >= 20 and float(np.dot(cmd, cmd)) > 1e-9:
+            pend = float(np.dot(cmd, ac) / np.dot(cmd, cmd))
+            resid = ac - pend * cmd
+            ss_tot = float(np.sum((ac - np.mean(ac)) ** 2))
+            s["steer_ac_por_comando_pendiente"] = round(pend, 4)
+            s["steer_ac_por_comando_r2"] = round(
+                1.0 - float(np.sum(resid ** 2)) / ss_tot, 4) if ss_tot > 1e-9 else None
+            s["steer_cmd_norm_rango"] = [round(float(cmd.min()), 4),
+                                          round(float(cmd.max()), 4)]
+            s["steer_angle_ac_rango"] = [round(float(ac.min()), 4),
+                                          round(float(ac.max()), 4)]
+        return s
+
+    def finalize(self, path, speed_gen, static_info=None, extra=None):
+        if static_info:
+            self.static_info = static_info
+        stats = self._stats()
+        tel = self._write_telemetry()
+        ref = self._write_reference(path, speed_gen)
+
+        manifest = {
+            "corrida": os.path.basename(self.dir),
+            "inicio_local": time.strftime("%Y-%m-%d %H:%M:%S",
+                                          time.localtime(self.t_start_wall)),
+            "fin_local": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "entorno": {
+                "python": sys.version.split()[0],
+                "numpy": np.__version__,
+                "scipy": scipy_version,
+                "plataforma": platform.platform(),
+                "procesador": platform.processor(),
+                "equipo": platform.node(),
+            },
+            "archivos": {
+                "controlador": os.path.basename(self.controller_file),
+                "controlador_sha256": self._sha256(self.controller_file),
+                "trazada": os.path.basename(self.track_file),
+                "trazada_sha256": self._sha256(self.track_file),
+                "telemetria": os.path.basename(tel),
+                "referencia": os.path.basename(ref),
+            },
+            "assetto_corsa": self.static_info,
+            "configuracion": self.cfg,
+            "resumen": stats,
+            "notas": self.notes,
+            "columnas_telemetria": TELEMETRY_COLUMNS,
+        }
+        if extra:
+            manifest.update(extra)
+
+        with open(os.path.join(self.dir, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+        lineas = ["RESUMEN DE LA CORRIDA", "=" * 60,
+                  f"Carpeta: {self.dir}", ""]
+        for k, v in stats.items():
+            lineas.append(f"  {k:38s} {v}")
+        if self.static_info:
+            lineas += ["", "Assetto Corsa:"]
+            for k, v in self.static_info.items():
+                lineas.append(f"  {k:38s} {v}")
+        texto = "\n".join(lineas)
+        with open(os.path.join(self.dir, "summary.txt"), "w", encoding="utf-8") as f:
+            f.write(texto + "\n")
+        return self.dir, texto, stats
 
 
 # =============================================================================
@@ -893,28 +1227,25 @@ def main(use_ffbeast=False):
         kf = SteeringKalmanFilter(mpc_steer.A, mpc_steer.B,
                                    q_theta=1e-6, q_theta_dot=1e-2, r_theta=1e-4)
 
-    log_name = f"mpc_unificado_{time.strftime('%Y%m%d_%H%M%S')}.csv"
-    log_file = open(log_name, 'w', newline='')
-    writer = csv.writer(log_file)
-    # Las columnas a partir de s_m son la instrumentacion del bloque B.
-    # steer_cmd_norm y steer_angle_ac permiten calibrar la cadena de
-    # direccion. kappa_path, v_real_kmh y accG dan el material para
-    # identificar el gradiente de subviraje. theta_ref_sat_steps y
-    # steer_out_sat dicen si el comando esta chocando contra un tope.
-    writer.writerow(['t_s', 'e_y_m', 'e_psi_rad', 'theta_ref0_deg', 'theta_real_deg', 'tau_Nm',
-                      'v_real_kmh', 'v_target_kmh', 'v_limit_kmh', 'u_cmd_raw', 'u_cmd_shaped',
-                      'gas', 'brake', 'loop_dt_ms',
-                      's_m', 'kappa_path', 'steer_cmd_norm', 'steer_angle_ac',
-                      'theta_ref0_unclipped_deg', 'theta_ref_sat_steps', 'steer_out_sat',
-                      'accG_x', 'accG_y', 'accG_z', 'tyres_out'])
-
-    # Acumuladores del diagnostico, se resumen al cerrar la corrida.
-    diag_cmd = []
-    diag_ac = []
-    n_theta_sat = 0
-    n_steer_sat = 0
-    max_tyres_out = 0
-    max_abs_ey = 0.0
+    # --- Recolección de la corrida ---
+    cfg_corrida = dict(CFG)
+    cfg_corrida.update({
+        "Ts_s": Ts, "Ts_ms": Ts * 1000.0, "N_steer": N_steer,
+        "wheelbase_L": 2.7, "steer_sign": -1,
+        "long_horizon": mpc_speed.N, "long_ts": mpc_speed.ts,
+        "modelo_longitudinal": model_params,
+        "planta_direccion": "FFBeast" if use_ffbeast else "simulada",
+        "ay_max_ms2": 6.5, "ax_brake_max_ms2": 10.25,
+    })
+    recorder = RunRecorder(
+        base_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs"),
+        cfg=cfg_corrida,
+        controller_file=os.path.abspath(__file__),
+        track_file=os.path.abspath("monza_fast_lane.csv"))
+    static_info = sm.read_static_info()
+    print(f"      Corrida: {recorder.dir}")
+    print(f"      Assetto Corsa: coche={static_info.get('carModel')} "
+          f"pista={static_info.get('track')} (lectura {static_info.get('lectura')})")
 
     print()
     if use_ffbeast:
@@ -931,6 +1262,10 @@ def main(use_ffbeast=False):
     MIN_SPEED_MS = 0.5
     cycle = 0
     t0 = time.time()
+    t_prev_loop = t0
+    packets_repetidos = 0
+    heading_ac_prev = None
+    t_heading_prev = t0
 
     print(f"{'t(s)':>6} | {'e_y(m)':>7} | {'θ(°)':>7} | {'v(km/h)':>8} | "
           f"{'v_obj(km/h)':>11} | {'gas':>5} | {'brake':>5} | flags")
@@ -945,20 +1280,40 @@ def main(use_ffbeast=False):
             ph = sm.read_physics()
 
             if gr.packetId == last_packet_id:
+                packets_repetidos += 1
                 time.sleep(0.005)
                 continue
             last_packet_id = gr.packetId
+
+            # Periodo real entre ciclos de control, que no es lo mismo que
+            # el tiempo de trabajo dentro del ciclo.
+            period_ms = (t_loop - t_prev_loop) * 1000.0
+            t_prev_loop = t_loop
 
             car_x, car_y, car_z = gr.carCoordinates
             speed_ms = ph.speedKmh / 3.6
             speed_kmh = ph.speedKmh
 
-            car_vx, _, car_vz = ph.velocity
+            car_vx, car_vy, car_vz = ph.velocity
             if speed_ms > MIN_SPEED_MS:
                 car_heading = math.atan2(car_vz, car_vx)
                 last_heading = car_heading
             else:
                 car_heading = last_heading
+
+            # Orientación real del vehículo frente a la dirección del vector
+            # velocidad. El controlador usa la segunda. La diferencia es el
+            # ángulo de deriva y se registra sin alterar el control, para
+            # poder comprobar después si introduce retardo de fase.
+            heading_ac = float(ph.heading)
+            sideslip = (car_heading - heading_ac + math.pi) % (2 * math.pi) - math.pi
+            if heading_ac_prev is None:
+                yaw_rate = 0.0
+            else:
+                d_head = (heading_ac - heading_ac_prev + math.pi) % (2 * math.pi) - math.pi
+                yaw_rate = d_head / max(1e-3, t_loop - t_heading_prev)
+            heading_ac_prev = heading_ac
+            t_heading_prev = t_loop
 
             e_y, e_psi, s, idx = path.frenet(car_x, car_z, car_heading)
 
@@ -990,6 +1345,7 @@ def main(use_ffbeast=False):
             t_speed0 = time.time()
             u_cmd = mpc_speed.compute_control(speed_kmh, v_target_kmh)
             t_speed_ms = (time.time() - t_speed0) * 1000.0
+            u_cmd_raw = u_cmd
 
             # Banda muerta: dentro de +-speed_deadband_kmh se rueda sin gas
             # ni freno, elimina el hunting fino a mitad de curva.
@@ -1006,49 +1362,69 @@ def main(use_ffbeast=False):
             gas, brake, steer_cmd_norm, steer_out_sat = vjoy.send_all(
                 theta_new, u_cmd_shaped, max_rad=CFG["vjoy_max_rad"])
 
-            # --- Instrumentacion (bloque B) ---
+            # --- Lectura del estado del vehículo para el registro ---
             steer_angle_ac = float(ph.steerAngle)
             acc_x, acc_y, acc_z = ph.accG
+            slip = list(ph.wheelSlip)
+            load = list(ph.wheelLoad)
             tyres_out = int(ph.numberOfTyresOut)
-            diag_cmd.append(steer_cmd_norm)
-            diag_ac.append(steer_angle_ac)
-            if ref_gen.last_sat_steps > 0:
-                n_theta_sat += 1
-            if steer_out_sat:
-                n_steer_sat += 1
-            if tyres_out > max_tyres_out:
-                max_tyres_out = tyres_out
-            if abs(e_y) > max_abs_ey:
-                max_abs_ey = abs(e_y)
 
             cycle += 1
             t_elapsed = time.time() - t0
-            loop_dt_ms = (time.time() - t_loop) * 1000.0
+            work_ms = (time.time() - t_loop) * 1000.0
 
             if cycle % 10 == 0:
                 flags = ("SAT" if ref_gen.last_sat_steps > 0 else "   ")
                 flags += (" OUT" if tyres_out > 2 else "    ")
+                flags += ("" if mpc_steer.last_ok else " NOCONV")
                 print(f"{t_elapsed:>6.1f} | {e_y:>7.2f} | {math.degrees(theta_new):>7.1f} | "
                       f"{speed_kmh:>8.1f} | {v_target_kmh:>11.1f} | {gas:>5.2f} | {brake:>5.2f} | "
                       f"{flags} | solve: dir={t_steer_ms:.1f}ms vel={t_speed_ms:.1f}ms "
-                      f"tot_loop={loop_dt_ms:.1f}ms")
+                      f"periodo={period_ms:.1f}ms")
 
-            writer.writerow([round(t_elapsed, 3), round(e_y, 4), round(e_psi, 4),
-                              round(math.degrees(theta_ref_seq[0]), 3),
-                              round(math.degrees(theta_new), 3), round(tau, 4),
-                              round(speed_kmh, 2), round(v_target_kmh, 2),
-                              round(v_limit_kmh, 2),
-                              round(u_cmd, 3), round(u_cmd_shaped, 3),
-                              round(gas, 3), round(brake, 3),
-                              round(loop_dt_ms, 2),
-                              round(float(s), 2), round(float(path.curvature[idx]), 6),
-                              round(steer_cmd_norm, 5), round(steer_angle_ac, 5),
-                              round(math.degrees(ref_gen.last_theta0_unclipped), 3),
-                              ref_gen.last_sat_steps, int(steer_out_sat),
-                              round(float(acc_x), 4), round(float(acc_y), 4),
-                              round(float(acc_z), 4), tyres_out])
-            if cycle % 20 == 0:
-                log_file.flush()
+            recorder.add([
+                cycle, round(t_elapsed, 4), round(period_ms, 3), round(work_ms, 3),
+                round(t_steer_ms, 3), round(t_speed_ms, 3),
+                int(gr.packetId), packets_repetidos,
+                round(float(car_x), 4), round(float(car_y), 4), round(float(car_z), 4),
+                int(idx), round(float(s), 3),
+                round(float(path.x[idx]), 4), round(float(path.z[idx]), 4),
+                round(float(e_y), 5), round(float(e_psi), 6),
+                round(float(path.curvature[idx]), 8), round(ref_gen.last_kappa0, 8),
+                round(float(car_heading), 6), round(heading_ac, 6),
+                round(float(sideslip), 6), round(float(yaw_rate), 5),
+                round(float(speed_kmh), 3), round(float(v_target_kmh), 3),
+                round(float(v_limit_kmh), 3),
+                round(3.6 * math.sqrt(car_vx ** 2 + car_vy ** 2 + car_vz ** 2), 3),
+                round(ref_gen.last_Ld, 3), round(ref_gen.last_k_ey_eff, 5),
+                round(ref_gen.last_alpha0, 6), round(ref_gen.last_delta_pp0, 6),
+                round(ref_gen.last_delta_ff0, 6),
+                round(math.degrees(theta_ref_seq[0]), 4),
+                round(math.degrees(ref_gen.last_theta_ref_last), 4),
+                round(math.degrees(ref_gen.last_theta0_unclipped), 4),
+                int(ref_gen.last_sat_steps),
+                round(math.degrees(theta_current), 4),
+                round(math.degrees(theta_dot_current), 4),
+                round(float(tau), 5), round(math.degrees(theta_new), 4),
+                round(float(steer_cmd_norm), 6), int(steer_out_sat),
+                round(steer_angle_ac, 6),
+                int(mpc_steer.last_ok), int(mpc_steer.last_nit),
+                round(float(mpc_steer.last_cost), 6),
+                round(float(u_cmd_raw), 5), round(float(u_cmd), 5),
+                round(float(u_cmd_shaped), 5),
+                round(float(gas), 5), round(float(brake), 5),
+                int(mpc_speed.last_ok), int(mpc_speed.last_nit),
+                round(float(mpc_speed.last_cost), 6),
+                round(float(ph.gas), 5), round(float(ph.brake), 5),
+                int(ph.gear), int(ph.rpms),
+                round(float(acc_x), 5), round(float(acc_y), 5), round(float(acc_z), 5),
+                round(float(slip[0]), 5), round(float(slip[1]), 5),
+                round(float(slip[2]), 5), round(float(slip[3]), 5),
+                round(float(load[0]), 3), round(float(load[1]), 3),
+                round(float(load[2]), 3), round(float(load[3]), 3),
+                tyres_out, int(gr.completedLaps), int(gr.isInPit),
+            ])
+            packets_repetidos = 0
 
             elapsed = time.time() - t_loop
             sleep_t = Ts - elapsed
@@ -1061,61 +1437,23 @@ def main(use_ffbeast=False):
         plant.center()
         vjoy.center()
         plant.close()
-        log_file.flush()
-        log_file.close()
+        try:
+            static_info = sm.read_static_info()
+        except Exception:
+            static_info = {}
         sm.close()
-        print(f"Log guardado: {log_name}")
-        print(f"Ciclos ejecutados: {cycle}")
-        _resumen_diagnostico(cycle, diag_cmd, diag_ac, n_theta_sat, n_steer_sat,
-                             max_tyres_out, max_abs_ey)
-
-
-def _resumen_diagnostico(cycle, diag_cmd, diag_ac, n_theta_sat, n_steer_sat,
-                          max_tyres_out, max_abs_ey):
-    """
-    Resumen del bloque B al cerrar la corrida.
-
-    El ajuste por minimos cuadrados entre el comando normalizado y
-    `steerAngle` de la memoria compartida da la constante que falta para
-    saber si `steering_ratio_n` y el recorte de 1.2 rad dejan al comando sin
-    autoridad suficiente en las curvas mas cerradas. Las unidades de
-    `steerAngle` en Assetto Corsa NO ESTAN VERIFICADAS, asi que aqui solo se
-    reporta el rango observado y la pendiente. La interpretacion queda para
-    el analisis posterior del log.
-    """
-    if cycle == 0:
-        return
-    print()
-    print("=" * 60)
-    print("  RESUMEN DE DIAGNÓSTICO (bloque B)")
-    print("=" * 60)
-    print(f"  Error lateral máximo          : {max_abs_ey:.2f} m")
-    print(f"  Ruedas fuera de pista (máximo): {max_tyres_out}")
-    print(f"  Ciclos con theta_ref recortada: {n_theta_sat} "
-          f"({100.0 * n_theta_sat / cycle:.1f} %)")
-    print(f"  Ciclos con eje de vJoy al tope: {n_steer_sat} "
-          f"({100.0 * n_steer_sat / cycle:.1f} %)")
-
-    cmd = np.asarray(diag_cmd, dtype=float)
-    ac = np.asarray(diag_ac, dtype=float)
-    if cmd.size >= 20:
-        print(f"  Comando normalizado, rango    : [{cmd.min():+.3f}, {cmd.max():+.3f}]")
-        print(f"  steerAngle de AC, rango       : [{ac.min():+.3f}, {ac.max():+.3f}]")
-        var = float(np.dot(cmd, cmd))
-        if var > 1e-9:
-            slope = float(np.dot(cmd, ac) / var)
-            resid = ac - slope * cmd
-            ss_tot = float(np.sum((ac - ac.mean()) ** 2))
-            r2 = 1.0 - float(np.sum(resid ** 2)) / ss_tot if ss_tot > 1e-9 else float('nan')
-            print(f"  Ajuste steerAngle = k · comando: k = {slope:.4f}, R² = {r2:.4f}")
-            print("  Unidades de steerAngle NO VERIFICADAS. Interpretar el ajuste")
-            print("  contra el tope de dirección real del vehículo antes de")
-            print("  cambiar steering_ratio_n o theta_clip_rad.")
-    if n_theta_sat > 0:
-        print()
-        print("  AVISO: la referencia de dirección tocó su tope. En las curvas")
-        print("  donde ocurre, el comando no puede pedir el radio que la trazada")
-        print("  exige, y eso no se corrige calibrando ganancias.")
+        print(f"\nCiclos ejecutados: {cycle}")
+        if cycle > 0:
+            carpeta, texto, _ = recorder.finalize(path, speed_gen, static_info)
+            print()
+            print(texto)
+            print()
+            print("=" * 60)
+            print(f"  Corrida guardada en: {carpeta}")
+            print("  Comprime esa carpeta completa y súbela para el análisis.")
+            print("=" * 60)
+        else:
+            print("No se registró ningún ciclo, no se guarda la corrida.")
 
 
 if __name__ == "__main__":
