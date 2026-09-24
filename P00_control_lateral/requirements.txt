@@ -1,0 +1,7 @@
+# Entorno de P00, verificado en el equipo de desarrollo el 2026-09-15.
+# El portátil de pruebas debe instalar las mismas versiones.
+numpy==2.5.3
+scipy==1.18.1
+osqp==1.1.3
+# Solo para correr en vivo con Assetto Corsa.
+pyvjoy==1.0.1

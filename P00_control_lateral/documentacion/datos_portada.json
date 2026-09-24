@@ -1,0 +1,14 @@
+{
+  "_nota": "Datos que entrega el investigador. Mientras un campo diga PENDIENTE, el documento lo muestra como pendiente y la auditoría lo reporta.",
+  "NOMBRE": "[PENDIENTE nombre del software]",
+  "SUBTITULO": "Plataforma de escritorio para la experimentación con controladores laterales y longitudinales de vehículos sobre el simulador Assetto Corsa",
+  "VERSION": "[PENDIENTE versión]",
+  "FECHA": "[PENDIENTE fecha]",
+  "AUTORES": "[PENDIENTE autores]",
+  "AFILIACION": "[PENDIENTE afiliación institucional, programa y grupo]",
+  "DIRECTOR": "[PENDIENTE director]",
+  "CONTACTO": "[PENDIENTE correo de contacto]",
+  "REPOSITORIO": "[PENDIENTE repositorio o no aplica]",
+  "CONTEXTO": "[PENDIENTE contexto institucional]",
+  "APORTES": "[PENDIENTE aportes de cada autor]"
+}

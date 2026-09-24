@@ -1,0 +1,109 @@
+{
+  "_descripcion": "Prueba de ganancias del PID longitudinal sintonizadas por el investigador en Simulink el 2026-09-16. Todo lo demas igual a base.json. No es configuracion de campana.",
+  "ts_s": 0.05,
+  "trazada": {
+    "csv": "Model Predictive Control/Python/monza_fast_lane.csv",
+    "suavizado_curvatura_m": 15.0,
+    "_nota": "15 m es la ventana usada para medir las regiones en la decision 2.2. Se usa la misma para controladores y regiones."
+  },
+  "regiones": {
+    "radio_baja_m": 500.0,
+    "radio_alta_m": 100.0
+  },
+  "vehiculo": {
+    "modelo_esperado": "alfa_romeo_giulietta_qv",
+    "desfase_heading_rad": 1.5707963267948966,
+    "indices_delanteras": [
+      0,
+      1
+    ],
+    "indices_traseras": [
+      2,
+      3
+    ],
+    "L_min_m": 2.0,
+    "L_max_m": 3.5,
+    "distancia_max_centro_m": 3.0,
+    "desalineacion_max_rad": 0.17453292519943295,
+    "forzar_respaldo": false,
+    "respaldo": {
+      "L_m": 2.7,
+      "fraccion_punto_desde_trasero": 0.43,
+      "_nota": "Valores de respaldo NO VERIFICADOS. L de 2.7 m supuesto y fraccion estimada entre 0.39 y 0.46 con telemetria el 2026-09-15."
+    }
+  },
+  "direccion": {
+    "delta_max_rad": 0.403,
+    "tasa_max_rad_s": 0.5235987755982988,
+    "rueda_rad_eje_completo": 0.403,
+    "signo_vjoy": 1,
+    "velocidad_minima_direccion_kmh": 5.0,
+    "velocidad_plena_direccion_kmh": 30.0,
+    "_nota": "rueda_rad_eje_completo y delta_max_rad medidos el 2026-09-15 con identificacion dedicada, mediana 0.4029 rad entre dos corridas limpias, Pure Pursuit 0.4084 con IC95 de 0.4014 a 0.4144 y Stanley 0.3975 con IC95 de 0.3808 a 0.4111, batalla medida 2.633 m. Sustituyen al valor anterior de 0.43 que se habia identificado con batalla supuesta de 2.7 m. velocidad_minima_direccion_kmh retiene la direccion con el vehiculo casi detenido, igual para los tres controladores."
+  },
+  "perfil": {
+    "ay_max_ms2": 6.5,
+    "ax_frenado_max_ms2": 10.25,
+    "grip_usage_factor": 0.8,
+    "grip_usage_brake": 0.6,
+    "v_max_recta_ms": 50.0,
+    "suavizado_perfil_m": 0.0,
+    "preview_m": 20.0,
+    "preview_speed_gain": 0.35,
+    "factores": {
+      "conservador": 0.8,
+      "nominal": 0.9,
+      "rapido": 1.0
+    },
+    "_nota": "Perfil base inicial tomado del script de barrido. Se ajusta en el piloto hasta que los tres controladores completen la vuelta rapida, decision 3.2."
+  },
+  "longitudinal": {
+    "kp": 0.0233750931194889,
+    "ki": 0.00135901608479883,
+    "kd": 0.000585226713040218,
+    "limite_integral": 735.8,
+    "pedal": {
+      "throttle_rise_s": 0.6,
+      "throttle_fall_s": 0.35,
+      "brake_rise_s": 0.45,
+      "brake_fall_s": 0.3
+    },
+    "_nota": "Ganancias de PID Tuner en Simulink sobre G(s)=248.7/(17.2s+1), PID discreto paralelo con Ts=0.05, integrador y derivada Backward Euler sin filtro, salida saturada entre 0 y 1. limite_integral sube de 50 a 1/ki para que la integral pueda aportar pedal a fondo, como en Simulink sin limite de integrador. Con 50 la simulacion da error permanente de 17.7 km/h a 120 km/h y 28.1 km/h a 180 km/h. NO VALIDADO en pista."
+  },
+  "controladores": {
+    "_nota": "Valores iniciales de prueba para las fases 2 y 3. NO SINTONIZADOS. La sintonia es la fase 4, decision 6.",
+    "pure_pursuit": {
+      "L0_m": 2.5,
+      "kv_s": 0.6
+    },
+    "stanley": {
+      "k": 1.0,
+      "epsilon_ms": 1.0
+    },
+    "mpc_cinematico": {
+      "N": 20,
+      "Qy": 1.0,
+      "Qpsi": 50.0,
+      "Rdelta": 1.0,
+      "Rddelta": 10.0,
+      "tiempo_max_s": 0.04,
+      "_nota": "Qpsi subio de 1 a 50 el 2026-09-15. El costo mezcla metros al cuadrado con radianes al cuadrado, y con Qpsi igual a 1 un error angular de 45 grados costaba 0.62 frente a 6.8 de un error lateral de 2.6 m, de modo que el optimizador cambiaba orientacion por posicion y oscilaba de tope a tope. Con Qpsi igual a 50, un radian equivale a 7.1 m. Valor inicial, no sintonizado."
+    }
+  },
+  "vuelta": {
+    "ventana_estabilizacion_s": 2.0,
+    "tolerancia_velocidad_cruce_kmh": 10.0,
+    "pos_cruce_alta": 0.8,
+    "pos_cruce_baja": 0.2,
+    "tiempo_limite_s": 400.0,
+    "_nota_tiempo": "Vuelta completa en perfil conservador el 2026-09-15, MPC 208.53 s, Stanley 208.61 s y Pure Pursuit 208.67 s. El limite de 400 s es cerca del doble e incluye el tramo de salida. Define vuelta fallida por tiempo, decision 5.1.",
+    "_nota": "El cruce de meta se detecta por el salto de la posicion normalizada. completedLaps no cuenta el primer cruce tras la salida, verificado el 2026-09-15."
+  },
+  "metricas": {
+    "punto_error_lateral": "cg",
+    "_nota": "Punto del vehiculo para la metrica primaria PENDIENTE de decision. Se calculan cg y eje trasero."
+  },
+  "salida": {
+    "directorio_corridas": "data/raw/p00/corridas"
+  }
+}

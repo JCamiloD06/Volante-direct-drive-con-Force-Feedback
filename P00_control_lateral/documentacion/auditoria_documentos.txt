@@ -1,0 +1,16 @@
+== Descripcion_del_Software_PENDIENTE_NOMBRE.docx
+figuras 2, tablas 6, ecuaciones 0, referencias 11
+== Manual_Tecnico_PENDIENTE_NOMBRE.docx
+figuras 3, tablas 6, ecuaciones 19, referencias 4
+== Manual_de_Usuario_PENDIENTE_NOMBRE.docx
+figuras 10, tablas 3, ecuaciones 0, referencias 0
+imagen pendiente capturas/01_lanzador_inicio.png
+imagen pendiente capturas/02_pestana_corrida.png
+imagen pendiente capturas/06_plan_campana.png
+imagen pendiente capturas/07_tanda_sintonia.png
+imagen pendiente capturas/08_piloto.png
+imagen pendiente capturas/10_mpc_completo.png
+imagen pendiente capturas/03_configuracion_corrida.png
+imagen pendiente capturas/04_salida_en_vivo.png
+imagen pendiente capturas/05_resumen_corrida.png
+imagen pendiente capturas/09_verificacion_fase3.png

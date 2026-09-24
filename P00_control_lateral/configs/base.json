@@ -1,0 +1,114 @@
+{
+  "_descripcion": "Configuracion comun de P00. Decisiones en docs/HYPOTHESES.md y docs/P00_PLAN_CONTROLADORES.md.",
+  "ts_s": 0.05,
+  "trazada": {
+    "csv": "Model Predictive Control/Python/monza_fast_lane.csv",
+    "suavizado_curvatura_m": 15.0,
+    "_nota": "15 m es la ventana usada para medir las regiones en la decision 2.2. Se usa la misma para controladores y regiones."
+  },
+  "regiones": {
+    "radio_baja_m": 500.0,
+    "radio_alta_m": 100.0
+  },
+  "vehiculo": {
+    "modelo_esperado": "alfa_romeo_giulietta_qv",
+    "desfase_heading_rad": 1.5707963267948966,
+    "indices_delanteras": [0, 1],
+    "indices_traseras": [2, 3],
+    "L_min_m": 2.0,
+    "L_max_m": 3.5,
+    "distancia_max_centro_m": 3.0,
+    "desalineacion_max_rad": 0.17453292519943295,
+    "forzar_respaldo": false,
+    "respaldo": {
+      "L_m": 2.7,
+      "fraccion_punto_desde_trasero": 0.43,
+      "_nota": "Valores de respaldo NO VERIFICADOS. L de 2.7 m supuesto y fraccion estimada entre 0.39 y 0.46 con telemetria el 2026-09-15."
+    }
+  },
+  "direccion": {
+    "delta_max_rad": 0.403,
+    "tasa_max_rad_s": 0.5235987755982988,
+    "rueda_rad_eje_completo": 0.403,
+    "signo_vjoy": 1,
+    "velocidad_minima_direccion_kmh": 5.0,
+    "velocidad_plena_direccion_kmh": 30.0,
+    "_nota": "rueda_rad_eje_completo y delta_max_rad medidos el 2026-09-15 con identificacion dedicada, mediana 0.4029 rad entre dos corridas limpias, Pure Pursuit 0.4084 con IC95 de 0.4014 a 0.4144 y Stanley 0.3975 con IC95 de 0.3808 a 0.4111, batalla medida 2.633 m. Sustituyen al valor anterior de 0.43 que se habia identificado con batalla supuesta de 2.7 m. velocidad_minima_direccion_kmh retiene la direccion con el vehiculo casi detenido, igual para los tres controladores."
+  },
+  "perfil": {
+    "ay_max_ms2": 6.5,
+    "ax_frenado_max_ms2": 10.25,
+    "grip_usage_factor": 0.8,
+    "grip_usage_brake": 0.6,
+    "v_max_recta_ms": 50.0,
+    "suavizado_perfil_m": 0.0,
+    "preview_m": 20.0,
+    "preview_speed_gain": 0.35,
+    "factores": {"conservador": 0.8, "nominal": 0.9, "rapido": 1.0},
+    "_nota": "Perfil base inicial tomado del script de barrido. Se ajusta en el piloto hasta que los tres controladores completen la vuelta rapida, decision 3.2."
+  },
+  "longitudinal": {
+    "kp": 0.09848818535681171,
+    "ki": 0.07576014258216285,
+    "kd": 0.0,
+    "limite_integral": 13.199552771636975,
+    "pedal": {"throttle_rise_s": 0.6, "throttle_fall_s": 0.35, "brake_rise_s": 0.45, "brake_fall_s": 0.3},
+    "_nota": "Congelado el 2026-09-16, decision PID longitudinal por SIMC en docs/DECISIONS.md. Regla SIMC sobre la rama de freno de sintonia_pid/planta_longitudinal.json con tau_c=0.25 s y theta=0.075 s, kp=1/(a(tau_c+theta)), ki=kp/(4(tau_c+theta)), kd=0, limite_integral=1/ki. Validado en pista con Stanley, Pure Pursuit y MPC cinematico. Antes kp 0.06, ki 0.015, kd 0.01, limite 50, sin sintonizar."
+  },
+  "controladores": {
+    "_nota": "SINTONIZADOS Y CONGELADOS el 2026-09-18 al cerrar la fase 4. Busqueda aleatoria con semilla 20260918, 20 vueltas por controlador en perfil nominal, criterio de seleccion en configs/rangos_sintonia.json y resultado en sintonia_fase4/seleccion_sintonia.json. Decision completa en docs/DECISIONS.md. Los mismos valores se usan en los tres perfiles durante toda la campana. Valores anteriores sin sintonizar, pure_pursuit L0 2.5 y kv 0.6, stanley k 1.0, mpc Qpsi 50, Rdelta 1.0 y Rddelta 10.0.",
+    "pure_pursuit": {"L0_m": 2.182824, "kv_s": 0.475382,
+      "_nota": "Ganadora sint_pure_pursuit_15, e_y RMSE 0.224 m y razon de esfuerzo 0.65. kv queda en el borde inferior del rango de busqueda, 0.45, puesto por el criterio de margen de fase. El optimo puede estar por debajo y se declara como limitacion."},
+    "stanley": {"k": 2.037435, "epsilon_ms": 1.0,
+      "_nota": "Ganadora sint_stanley_20, e_y RMSE 0.143 m y razon de esfuerzo 1.25. Empato con sint_stanley_18, 0.135 m, dentro del ruido entre vueltas, y se resolvio por menor esfuerzo. Las seis vueltas con k por encima de 2.59 no completaron, el limite real de estabilidad esta entre 2.12 y 2.60. epsilon_ms no se sintoniza."},
+    "mpc_cinematico": {"N": 20, "Qy": 1.0, "Qpsi": 33.167603, "Rdelta": 8.147265, "Rddelta": 3.092056, "tiempo_max_s": 0.04,
+      "_nota": "Ganadora sint_mpc_cinematico_09, e_y RMSE 0.079 m y razon de esfuerzo 2.22. Empato con otras cuatro entre 0.069 y 0.080 m y se resolvio por menor esfuerzo. Qy se deja en 1 y no se sintoniza, escalar los cuatro pesos no cambia el optimo del QP. N y tiempo_max_s son de implementacion, decisiones I4 e I6."}
+  },
+  "abandono": {
+    "_nota": "Abandono automatico de la corrida, 2026-09-18. Un candidato de sintonia inestable deja el vehiculo contra el muro o girando, la vuelta no termina nunca y antes habia que forzar el cierre, lo que perdia la telemetria. La corrida se cierra sola y guarda, con la vuelta como no completada. Solo se arma despues de que el vehiculo supere velocidad_arranque_kmh y no aplica en pits.",
+    "velocidad_min_kmh": 5.0,
+    "tiempo_quieto_s": 8.0,
+    "ruedas_fuera_min": 3,
+    "tiempo_ruedas_fuera_s": 3.0,
+    "velocidad_arranque_kmh": 30.0
+  },
+  "vuelta": {
+    "ventana_estabilizacion_s": 2.0,
+    "tolerancia_velocidad_cruce_kmh": 10.0,
+    "pos_cruce_alta": 0.8,
+    "pos_cruce_baja": 0.2,
+    "tiempo_limite_s": 420.0,
+    "_nota_tiempo": "Fijado el 2026-09-19 al cerrar el piloto, decision 5.1. Doble de la mediana del tiempo de vuelta del perfil mas lento, conservador con mediana de 207.96 s sobre tres vueltas del piloto, redondeado hacia arriba a multiplo de 10 s. Sustituye al valor provisional de 400 s puesto a ojo. Define vuelta fallida por tiempo y se mide sobre la corrida completa, que incluye la salida de pits de unos 35 s.",
+    "_nota": "El cruce de meta se detecta por el salto de la posicion normalizada. completedLaps no cuenta el primer cruce tras la salida, verificado el 2026-09-15."
+  },
+  "metricas": {
+    "punto_error_lateral": "cg",
+    "punto_robustez": "tras",
+    "_nota": "Decidido el 2026-09-20. La metrica primaria se mide en la posicion del vehiculo que reporta Assetto Corsa, comun a los tres controladores, y el mapa se repite con el eje trasero como chequeo de robustez. Cada controlador conserva su propio punto de control, eje trasero en Pure Pursuit y en el MPC, eje delantero en Stanley, porque eso es parte de su formulacion.",
+    "_nota_nombre": "La etiqueta cg es historica. Medido con telemetria el 2026-09-20 sobre una vuelta del piloto, ese punto cae 1.557 m por delante del eje trasero, 0.591 de la batalla de 2.633 m, y centrado lateralmente con desviacion de 0.002 m. No es el punto medio entre ejes, que estaria en 1.317 m. Que coincida con el centro de gravedad real es NO VERIFICADO, los datos del vehiculo estan empaquetados en data.acd. La posicion es consistente con un reparto de peso cercano a 59 por delante y 41 por detras, plausible en un vehiculo de traccion delantera, pero eso es una inferencia. En el manuscrito se nombra como posicion del vehiculo reportada por el simulador, no como centro de gravedad.",
+    "_nota_eleccion": "Se eligio ese punto porque no es el punto de control de ninguno de los tres, de modo que no favorece a ninguno. El eje trasero lo usan Pure Pursuit y el MPC, el delantero lo usa Stanley. Medir a cada controlador en su propio punto compararia cantidades distintas y premiaria a cada uno en lo que optimiza."
+  },
+  "criterio_mapa": {
+    "_descripcion": "Criterio del mapa de dominio de operacion, fijado el 2026-09-20 antes de la campana. Tres capas, factibilidad, decision de mejora y costo reportado. Decision completa en docs/DECISIONS.md.",
+    "factibilidad": {
+      "max_pct_ciclos_sobre_periodo": 1.0,
+      "_nota_tiempo_real": "Al menos el 99 por ciento de los ciclos por debajo del periodo de 50 ms, decision 1.4. Sigue siendo condicion porque mide si el controlador es utilizable, no su calidad.",
+      "max_vueltas_fallidas_por_celda": 2,
+      "_nota_fallidas": "Con mas de 2 vueltas fallidas en las 10 sesiones la celda se declara no evaluable para ese controlador, decision 5.2."
+    },
+    "decision_de_mejora": {
+      "metrica": "rmse_e_y",
+      "_nota": "Unica capa que produce veredicto por celda. Umbral de la decision 1.2 medido en el piloto, intervalo bootstrap que no cruza el umbral y Wilcoxon con correccion de Holm en familias de 9 celdas."
+    },
+    "esfuerzo_reportado": {
+      "metrica": "razon_rms_tasa_mpc_sobre_geometrico",
+      "banda_bajo_costo": 1.5,
+      "banda_actividad_superior": 3.0,
+      "_nota": "El esfuerzo de direccion pasa de condicion que bloquea a metrica reportada por celda, con etiquetas. Hasta 1.5 mejora de bajo costo, entre 1.5 y 3 mejora con mayor actividad de direccion, por encima de 3 mejora con actividad muy superior. Las bandas son decision del investigador declarada antes de correr la campana, no salen de la literatura.",
+      "_motivo_del_cambio": "La condicion anterior exigia que el MPC no superara en mas de 20 por ciento el RMS de tasa del geometrico. En las vueltas del piloto lo supera entre 80 y 581 por ciento, de modo que habria impedido declarar mejora en cualquier celda antes de correr la campana. Esa condicion no distingue entre un controlador que oscila, que es un defecto, y un controlador predictivo que corrige de forma activa, que es su modo de operar. Ninguno se acerca al limite de tasa de la plataforma, el p95 mas alto observado es 0.117 rad/s frente a 0.5236."
+    }
+  },
+  "salida": {
+    "directorio_corridas": "data/raw/p00/corridas"
+  }
+}

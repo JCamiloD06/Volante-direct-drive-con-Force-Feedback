@@ -1,0 +1,35 @@
+{
+  "_descripcion": "Parametros del piloto, fase 5. Se escriben antes de generar el plan. Los usa lanzador/plan_piloto.py.",
+  "_fecha": "2026-09-19",
+  "_orden": "Primero el ajuste del perfil base y despues la repetibilidad. Cambiar grip_usage_factor cambia los tres perfiles, incluido el nominal, asi que la repetibilidad solo tiene sentido con el valor ya fijado.",
+  "sesion": 0,
+  "ajuste_perfil": {
+    "_objetivo": "Decision 3.2. Bajar el agarre planificado hasta que los tres controladores completen la vuelta del perfil rapido sin ningun ciclo con ruedas fuera. El nivel se acepta solo si los tres pasan, para que ninguna celda del mapa quede vacia y para que el perfil no quede ajustado a favor de un controlador.",
+    "perfil": "rapido",
+    "parametro": "grip_usage_factor",
+    "_nota_parametro": "Fraccion del agarre lateral que el planificador usa al construir el perfil. En base.json vale 0.8 y multiplica ay_max_ms2 de 6.5, es decir 5.2 m/s2 de aceleracion lateral planificada.",
+    "niveles": [0.80, 0.78, 0.76, 0.74, 0.72, 0.70],
+    "_nota_niveles": "Escalera descendente desde el valor actual. Paso de 0.02, que cambia la velocidad en curva cerca de 1.3 por ciento por escalon. Si ninguno de los seis niveles pasa, el piloto se detiene y la escalera se revisa, no se amplia en caliente.",
+    "criterio_aceptacion": {
+      "vuelta_completada": true,
+      "ciclos_ruedas_fuera_max": 0,
+      "controladores_que_deben_pasar": "todos"
+    }
+  },
+  "repetibilidad": {
+    "_objetivo": "Decision 1.2. Estimar la desviacion estandar del RMSE de e_y entre vueltas identicas, que fija el umbral de mejora practica junto con el 10 por ciento del RMSE del geometrico.",
+    "perfil": "nominal",
+    "repeticiones": 10,
+    "_nota_repeticiones": "Diez vueltas por controlador, 30 en total. Decision del investigador del 2026-09-19, subida desde cinco. Con diez vueltas el intervalo de confianza del 95 por ciento de sigma va de 0.69 a 1.83 veces el valor estimado y el error relativo tipico es del 24 por ciento, frente a 0.60 a 2.87 y 35 por ciento con cinco. El sesgo por muestra pequena baja del 6 al 3 por ciento. Se acepta el costo de 15 vueltas adicionales, cerca de 50 minutos, porque sigma entra directamente en el umbral de mejora practica de la decision 1.2.",
+    "controladores": ["pure_pursuit", "stanley", "mpc_cinematico"],
+    "_nota_controladores": "Los tres, porque la variabilidad puede depender del controlador. Si difieren, se reporta por separado y el umbral de cada comparacion usa la del geometrico implicado."
+  },
+  "tiempo_limite": {
+    "_objetivo": "Decision 5.1. Fijar el tiempo limite de vuelta a partir de la duracion medida en el piloto, en lugar del valor provisional de 400 s puesto a ojo.",
+    "_regla": "Se calcula al cerrar el piloto como el doble de la mediana del tiempo de vuelta del perfil mas lento, redondeado hacia arriba a multiplo de 10 s. No se decide en caliente.",
+    "_bloque_anadido": "2026-09-19. El plan original no incluia el perfil conservador, que es el mas lento de los tres, asi que la regla no era aplicable con datos del piloto. Se anade un bloque de tres vueltas, una por controlador, en perfil conservador y con el agarre ya fijado. Decision del investigador, alternativa descartada fue aplicar la regla con las vueltas de verificacion, que usan otros parametros.",
+    "perfil": "conservador",
+    "repeticiones": 1,
+    "controladores": ["pure_pursuit", "stanley", "mpc_cinematico"]
+  }
+}

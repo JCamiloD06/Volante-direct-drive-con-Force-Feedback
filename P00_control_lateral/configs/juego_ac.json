@@ -1,0 +1,29 @@
+{
+  "_descripcion": "Apertura y preparación de Assetto Corsa desde el lanzador. Prueba del 2026-09-16 en docs/P00_PLAN_CONTROLADORES.md.",
+  "ruta_ac": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\assettocorsa",
+  "steam_appid": "244210",
+  "_nota_steam_appid": "Sin steam_appid.txt en la carpeta del juego, acs.exe termina con código 53 y Steam abre el lanzador oficial, que reescribe la carpeta cfg. Verificado el 2026-09-16.",
+  "directorio_cfg_juego": "~\\Documents\\Assetto Corsa\\cfg",
+  "plantilla": "configs/sesion_ac",
+  "_nota_plantilla": "race.ini, assists.ini y controls.ini son los de Content Manager usados en las tandas de verificación del 2026-09-15. video.ini es el vigente en la prueba de apertura del 2026-09-16, ventana de 1024 por 768.",
+  "directorio_respaldos": "data/raw/p00/respaldos_cfg_ac",
+  "directorio_preparaciones": "data/raw/p00/preparaciones_ac",
+  "esperado": {"track": "monza", "carModel": "alfa_romeo_giulietta_qv"},
+  "posicion_salida": 0.8564,
+  "tolerancia_posicion_salida": 0.005,
+  "velocidad_max_salida_kmh": 1.0,
+  "ventana": {
+    "titulo": "Assetto Corsa",
+    "tamano_referencia": [1024, 768],
+    "_nota": "Coordenadas en el área cliente de la ventana de referencia. Se escalan al tamaño real, que con la escala de Windows al 125 por ciento fue de 819 por 614.",
+    "botones": {
+      "conducir": [49, 174]
+    },
+    "_nota_botones": "conducir verificado en pista el 2026-09-16. El reinicio no usa botones, cierra y reabre el juego, porque el menú de pausa ignora el clic programado."
+  },
+  "tiempo_max_carga_s": 90.0,
+  "tiempo_max_cierre_s": 30.0,
+  "clic_conducir": {"espera_inicial_s": 2.0, "espera_s": 3.0, "maximo": 2, "espera_manual_s": 120.0},
+  "prueba_control": {"freno": 0.3, "tolerancia": 0.05, "tiempo_max_s": 4.0},
+  "id_vjoy": 1
+}
