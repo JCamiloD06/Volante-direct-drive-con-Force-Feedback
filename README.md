@@ -1,79 +1,92 @@
 # Volante direct drive con Force Feedback
 
-Proyecto de desarrollo de un volante direct drive con Force Feedback (FFB) de bajo costo, junto con controladores de dirección autónoma probados en Assetto Corsa como entorno de simulación.
+Proyecto de desarrollo de un **volante direct-drive con Force Feedback (FFB)** de bajo costo, junto con la implementación de un **controlador MPC (Model Predictive Control)** orientado a dirección autónoma, usando Assetto Corsa como entorno de simulación y pruebas.
 
 ## Equipo
 
-Integrantes: Juan Camilo Díaz López y Jesus Alberto Lastra Robles
-Profesor: Francisco Javier Burgos Flórez
-Carrera: Ingeniería Mecatrónica
-Institución: Universidad Nacional de Colombia, Sede de La Paz
+- **Integrantes:** Juan Camilo Díaz López y Jesus Alberto Lastra Robles
+- **Profesor:** Francisco Javier Burgos Flórez
+- **Carrera:** Ingeniería Mecatrónica
+- **Institución:** Universidad Nacional de Colombia, Sede de La Paz
 
 ## Descripción del proyecto
 
-El proyecto tiene tres frentes de trabajo.
+El proyecto combina dos frentes de trabajo:
 
-1. Hardware del volante. Volante direct drive construido con motores de hoverboard, controlados con un MKS ODrive Mini y firmware FFBeast, con Force Feedback validado en Assetto Corsa. Carpetas `Prototipo/` y `Firmware/`.
-2. MPC sobre la planta del volante. Controlador predictivo cuya planta modelada es el volante, diseñado en Matlab y ejecutado en tiempo real en Python con la telemetría de Assetto Corsa, más un control longitudinal independiente de acelerador y freno. Carpeta `Model Predictive Control/`.
-3. Plataforma de comparación de controladores laterales. Software que ejecuta Pure Pursuit, Stanley y un MPC con modelo bicicleta cinemático del vehículo bajo las mismas condiciones, con lanzador gráfico, planes aleatorizados con semilla, registro trazable de corridas y análisis por región de curvatura. Carpeta `P00_control_lateral/`.
+1. **Hardware del volante (Force Feedback):** construcción de un volante direct-drive reutilizando motores de hoverboard, controlados mediante un MKS ODrive Mini, con retroalimentación de fuerza (FFB) validada en el simulador Assetto Corsa.
+2. **Control MPC para dirección autónoma:** diseño e implementación de un controlador predictivo (Model Predictive Control) para dirección autónoma, con modelado/tuning en Matlab e implementación en tiempo real mediante Python, interactuando con la telemetría de Assetto Corsa.
 
-Los frentes 2 y 3 tienen alcances distintos. En el frente 2 la planta es el volante. En el frente 3 el modelo del MPC es el vehículo, y el objetivo es comparar leyes de control lateral con la misma plataforma.
+> **Nota sobre el alcance del MPC:** a diferencia de la mayoría de trabajos de control predictivo aplicados a conducción autónoma, que modelan la dinámica completa del vehículo (chasis, neumáticos, tracción, etc.), en este proyecto la **planta modelada para el MPC lateral es únicamente el volante** (el sistema direct-drive con force feedback). Esto se debe a que nuestro sistema físico es el volante en sí, no el vehículo completo, por lo que el alcance de ese controlador se limita a la **dirección autónoma** (control del ángulo del volante), y no a la dinámica lateral/longitudinal del auto.
+>
+> De forma complementaria, se implementó también un **controlador longitudinal independiente** (acelerador/freno, `mpc_monza_UNIFICADO`) que no modela la planta del volante sino la respuesta de velocidad del auto ante los pedales (modelo de primer orden identificado empíricamente). Este control longitudinal es un módulo aparte que corre junto al MPC lateral para completar la conducción autónoma, pero no forma parte de la planta física del volante descrita arriba.
 
 ## Estructura del repositorio
 
 ```
 Volante-direct-drive-con-Force-Feedback/
-├── README.md
-├── LICENSE
-├── .gitignore
-├── Firmware/                         Frente 1, firmware FFBeast (terceros)
-├── Prototipo/                        Frente 1, diseño físico y fotografías
-├── Model Predictive Control/         Frente 2
-│   ├── AC Codes/
-│   ├── Matlab/
-│   └── Python/
-│       ├── mpc_monza_Lateral.py
-│       ├── mpc_monza_Completo.py
-│       ├── mpc_monza_Completo_barrido.py   Nuevo, lo ejecuta la pestaña MPC completo del frente 3
-│       ├── monza_fast_lane.csv             Trazada compartida por los frentes 2 y 3
-│       └── ...
-├── P00_control_lateral/              Frente 3, nuevo
-│   ├── abrir_lanzador.py             Punto de entrada
-│   ├── ejecutar_corrida.py
-│   ├── lanzador/                     Interfaz gráfica
-│   ├── plataforma/                   Simulador, trazada, perfil, vJoy, registro
-│   ├── controladores/                Pure Pursuit, Stanley, MPC cinemático
-│   ├── analisis/                     Métricas y mapa por velocidad y curvatura
-│   ├── configs/                      Parámetros y plantilla de sesión de AC
-│   ├── pruebas/                      Pruebas automáticas sin simulador
-│   ├── documentacion/                Descripción, manual técnico y manual de usuario
-│   ├── requirements.txt
-│   └── README.md
-└── scripts/                          Frente 3, nuevo
-    ├── 08_graficas_corrida.py
-    ├── 16_p00_figuras.py
-    └── 17_p00_tablas.py
+├── .gitignore                              Archivos que Git debe ignorar (metadata de Windows/macOS, temporales, etc.)
+├── README.md                               Este archivo
+├── Firmware/
+│   ├── ffbeast-wheel-RC.24.1.4.Full/      Firmware comprimido (contiene ffbeast-wheel-hex y ffbeast-wheel-ui)
+│   └── README                              Instrucciones de instalación y configuración del firmware
+├── Model Predictive Control/
+│   ├── AC Codes/                           Scripts para leer/interactuar con Assetto Corsa (telemetría)
+│   │   ├── mpc_localization                Localización del carro sobre la trazada (Frenet)
+│   │   ├── parse_fast_lane                 Extracción/procesado de la trazada (fast lane) de la pista
+│   │   └── README
+│   ├── Matlab/                             Modelado, diseño y validación del controlador MPC
+│   │   ├── Modelo                          Modelo dinámico del volante en espacio de estados (continuo y discreto) y función de transferencia
+│   │   ├── MPC View 2D                     Simulink: MPC controlando el volante aislado (θ vs θ_ref)
+│   │   ├── MPC View 3D                     Simulink: MPC + volante + modelo de vehículo (bicicleta) + escena 3D
+│   │   ├── MPCDesignerSessionPython        Sesión de MPC Designer con el objeto mpc1 ya diseñado/ajustado
+│   │   ├── Validacion                      Post-proceso: métricas de error de seguimiento, trayectoria XY, curvatura y velocidad
+│   │   └── README
+│   └── Python/                             Implementación del MPC en tiempo real / interfaz con el simulador
+│       ├── mpc_monza_FINAL                 Script principal: MPC lateral (dirección) corriendo en Monza
+│       ├── mpc_monza_UNIFICADO             Extiende mpc_monza_FINAL agregando MPC longitudinal (acelerador/freno)
+│       ├── monza_fast_lane                 Trazada de referencia de Monza (entrada del MPC)
+│       ├── mpc_session_*                   Logs de sesiones de manejo (salida del MPC)
+│       └── README
+└── Prototipo/
+    ├── calculos_engranajes_volante         Script de MATLAB con los cálculos de resistencia de engranajes
+    ├── Imagenes/                            Registro fotográfico del prototipo
+    │   ├── Desgaste engranajes ABS.jpg     Desgaste (manchas blancas) por golpeteo de dientes del engranaje-piñón
+    │   ├── Desgaste engranajes ABS 2.jpg   Segundo ángulo del desgaste del engranaje-piñón
+    │   ├── Estructura Volante.jpg          Vista interna: encoder, MKS ODrive, motor y rejillas de ventilación
+    │   ├── Prototipo completo.jpg          Estructura completa con volante provisional para pruebas
+    │   └── README                          Descripción detallada de cada fotografía
+    └── README                              Avance del diseño físico del volante
 ```
 
 ## Documentación
 
-* Firmware. Instalación de STM32CubeProgrammer, modo bootloader del MKS ODrive y configuración con la aplicación de FFBeast.
-* AC Codes. Interfaz con Assetto Corsa, localización del carro sobre la trazada y procesado de la fast lane.
-* Matlab. Modelado, diseño y validación del MPC sobre la planta del volante.
-* Python. MPC en tiempo real sobre Monza y control longitudinal.
-* P00_control_lateral. Instalación, uso del lanzador, convención de signos y pruebas, en su `README.md` y en `documentacion/`.
+- **Firmware** — Instalación de STM32CubeProgrammer, modo bootloader del MKS ODrive y configuración con la app de setup de FFBeast.
+- **AC Codes** — Scripts de interfaz con Assetto Corsa: localización del carro sobre la trazada y procesado de la fast lane.
+- **Matlab (MPC Simulado)** — Modelado, diseño y validación del controlador MPC. La planta modelada corresponde al volante (sistema direct-drive), no al vehículo completo, ya que el alcance del proyecto es la dirección autónoma y no la dinámica integral del auto.
+- **Python (MPC en tiempo real)** — Implementación del MPC corriendo en tiempo real sobre Monza: control lateral del volante (`mpc_monza_FINAL`, simulado o físico vía FFBeast) y control longitudinal de acelerador/freno (`mpc_monza_UNIFICADO`), e interfaz con Assetto Corsa.
+- **Prototipo** — Historial de diseño y fabricación del volante: componentes, relación de engranajes, cálculos de resistencia (Ecuación de Lewis), comparación de materiales (PC, ABS, PLA) y registro fotográfico del desarrollo (ver `Prototipo/Imagenes`).
 
-## Uso rápido del frente 3
+## Archivo .gitignore
 
-Desde la raíz del repositorio.
+El repositorio incluye un `.gitignore` en la raíz para evitar que se suban archivos que no aportan al proyecto:
 
-```
-pip install -r P00_control_lateral/requirements.txt
-python P00_control_lateral/abrir_lanzador.py
-```
+- **Metadata de Windows/macOS:** `desktop.ini`, `Thumbs.db`, `ehthumbs.db`, `.DS_Store` — archivos que el propio sistema operativo genera en cada carpeta para guardar preferencias de visualización, y que no tienen relación con el código o los diseños.
+- **Archivos temporales de edición:** `*.tmp`, `*.bak`, `*~`.
+- **Entornos virtuales y cachés de Python:** `venv/`, `env/`, `__pycache__/`, `*.pyc` — en caso de que alguien cree un entorno virtual dentro del repo al trabajar en `Model Predictive Control/Python`.
+- **Archivos autogenerados de MATLAB:** `*.asv` (copias de autoguardado) y `slprj/` (carpeta de compilación de Simulink), generados al trabajar en `Model Predictive Control/Matlab`.
 
-Requiere Windows, Assetto Corsa con Monza y el Alfa Romeo Giulietta QV, y vJoy. Las corridas se guardan en `data/raw/p00/corridas`, que no se versiona.
+Si ya subiste alguno de estos archivos antes de agregar el `.gitignore` (por ejemplo, un `desktop.ini` dentro de `Firmware`), el `.gitignore` no lo elimina automáticamente: hay que borrarlo manualmente del repositorio una sola vez (desde GitHub o con `git rm --cached <archivo>`), y a partir de ahí Git dejará de rastrearlo.
 
-## Licencia
+## Estado actual
 
-Ver `LICENSE`.
+- Primer prototipo del volante (ABS) fabricado y validado en Assetto Corsa. (Completado)
+- Firmware configurado y funcionando sobre FFBeast + MKS ODrive Mini. (Completado)
+- Cálculo estructural de engranajes completado; policarbonato seleccionado como material para el nuevo prototipo. (Completado)
+- Rediseño del volante en policarbonato. (En curso)
+- Desarrollo del controlador MPC para dirección autónoma. (En curso)
+
+## Próximos pasos
+
+- Finalizar el nuevo prototipo del volante en policarbonato.
+- Integrar el controlador MPC con el hardware del volante para pruebas de dirección autónoma.
+- Documentar resultados de las pruebas de MPC en Assetto Corsa.
